@@ -7,12 +7,13 @@ def get_args():
     parser.add_argument(
         '--config', 
         type = str, 
+        default = './cfgs/PCN_models/PoinTr.yaml', 
         help = 'yaml config file')
     parser.add_argument(
         '--launcher',
         choices=['none', 'pytorch'],
         default='none',
-        help='job launcher')     
+        help='job launcher, pytorch means distributed train')     
     parser.add_argument('--local_rank', type=int, default=0)
     parser.add_argument('--num_workers', type=int, default=4)   
     # seed 

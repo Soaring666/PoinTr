@@ -60,6 +60,7 @@ def run_net(args, config, train_writer=None, val_writer=None):
     else:
         print_log('Using Data parallel ...' , logger = logger)
         base_model = nn.DataParallel(base_model).cuda()
+        base_model = base_model.cuda()
     # optimizer & scheduler
     optimizer, scheduler = builder.build_opti_sche(base_model, config)
     

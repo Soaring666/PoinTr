@@ -143,6 +143,7 @@ class DGCNN_Grouper(nn.Module):
 
         """
         coor = x  #(B, 3, N)
+        coor = coor.to(x.device)
         f = self.input_trans(x) #the feature of points(B, 8, N)
 
         f = self.get_graph_feature(coor, f, coor, f)    #take all points as center points(B, 16, N, 16)
