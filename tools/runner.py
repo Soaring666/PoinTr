@@ -238,7 +238,7 @@ def validate(base_model, test_dataloader, epoch, ChamferDisL1, ChamferDisL2, val
 
             for _taxonomy_id in taxonomy_ids:
                 if _taxonomy_id not in category_metrics:
-                    category_metrics[_k'k'kaxonomy_id] = AverageMeter(Metrics.names())
+                    category_metrics[_taxonomy_id] = AverageMeter(Metrics.names())
                 category_metrics[_taxonomy_id].update(_metrics)
 
 

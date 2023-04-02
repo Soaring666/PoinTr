@@ -68,7 +68,7 @@ class PCN(data.Dataset):
         """Prepare file list for the dataset"""
         file_list = []
 
-        for dc in self.dataset_categories:
+        for dc in self.dataset_categories:  #dc为字典
             print_log('Collecting files of Taxonomy [ID=%s, Name=%s]' % (dc['taxonomy_id'], dc['taxonomy_name']), logger='PCNDATASET')
             samples = dc[subset]
 
