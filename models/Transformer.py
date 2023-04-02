@@ -147,6 +147,7 @@ class CrossAttention(nn.Module):
         self.proj_drop = nn.Dropout(proj_drop)
 
     def forward(self, q, v):
+        #q,v除了B形状不一样
         B, N, _ = q.shape
         C = self.out_dim
         k = v
@@ -200,6 +201,7 @@ class DecoderBlock(nn.Module):
 
     def forward(self, q, v, self_knn_index=None, cross_knn_index=None):
         # q = q + self.drop_path(self.self_attn(self.norm1(q)))
+        # q为query，v为128个中心点特征
         norm_q = self.norm1(q)
         q_1 = self.self_attn(norm_q)
 
@@ -217,6 +219,7 @@ class DecoderBlock(nn.Module):
         q_2 = self.attn(norm_q, norm_v) #(B, np, C)
 
         if cross_knn_index is not None:
+            #将norm_v的特征通过knn聚合起来，然后和norm_q的特征cat
             knn_f = get_graph_feature(norm_v, cross_knn_index, norm_q)
             knn_f = self.knn_map_cross(knn_f)
             knn_f = knn_f.max(dim=1, keepdim=False)[0]
@@ -263,6 +266,7 @@ class Block(nn.Module):
 
     def forward(self, x, knn_index = None):
         # x = x + self.drop_path(self.attn(self.norm1(x)))
+        #如果有knn，则将自注意力后得到的特征与knn的特征cat
         norm_x = self.norm1(x)
         x_1 = self.attn(norm_x)
 
@@ -273,6 +277,7 @@ class Block(nn.Module):
             x_1 = torch.cat([x_1, knn_f], dim=-1)  #(B, n, 2*c)
             x_1 = self.merge_map(x_1)  #(B, n, c)
         
+        #残差连接
         x = x + self.drop_path(x_1)
         x = x + self.drop_path(self.mlp(self.norm2(x)))
         return x
@@ -414,20 +419,20 @@ class PCTransformer(nn.Module):
         knn_index = get_knn_index(coor)  #(B*S*8)
         # NOTE: try to use a sin wave  coor B 3 N, change the pos_embed input dim
         # pos = self.pos_encoding_sin_wave(coor).transpose(1,2)
-        pos =  self.pos_embed(coor).transpose(1,2)  #(B, 128, 768)
-        x = self.input_proj(f).transpose(1,2)  #(B, 128, 768)
+        pos =  self.pos_embed(coor).transpose(1,2)    #position (B, 128, 768)
+        x = self.input_proj(f).transpose(1,2)         #feature  (B, 128, 768)
         # cls_pos = self.cls_pos.expand(bs, -1, -1)
         # cls_token = self.cls_pos.expand(bs, -1, -1)
         # x = torch.cat([cls_token, x], dim=1)
         # pos = torch.cat([cls_pos, pos], dim=1)
         # encoder
 
-        #blk为自注意力和knn聚合特征，但对于knn的特征只聚合knn_layer次，形状不变
+        #blk为自注意力和knn聚合特征，但对于knn的特征只聚合knn_layer次，形状不变，输出的x即为聚合后的特征
         for i, blk in enumerate(self.encoder):  
             if i < self.knn_layer:
                 x = blk(x + pos, knn_index)   # (B, N, C)B 128 768
             else:
-                x = blk(x + pos)
+                x = blk(x + pos)              # (B, N, C)B 128 768
         # build the query feature for decoder
         # global_feature  = x[:, 0] # B C
 
@@ -437,12 +442,14 @@ class PCTransformer(nn.Module):
         coarse_point_cloud = self.coarse_pred(global_feature).reshape(bs, -1, 3)  #  B M(num_query) C(3)
 
         new_knn_index = get_knn_index(coarse_point_cloud.transpose(1, 2).contiguous())
+        #以生成的粗糙点云为中心点，对原始的进行dgcnn聚合后得到的128个中心点做knn，这128个中心点为残缺点云的
         cross_knn_index = get_knn_index(coor_k=coor, coor_q=coarse_point_cloud.transpose(1, 2).contiguous())
 
+        #将全局特征和初步形成的粗糙点云cat作为下一步的query
         query_feature = torch.cat([
             global_feature.unsqueeze(1).expand(-1, self.num_query, -1), 
-            coarse_point_cloud], dim=-1) # B M C+3 
-        q = self.mlp_query(query_feature.transpose(1,2)).transpose(1,2) # B M(embed_dim) C 
+            coarse_point_cloud], dim=-1) # B M 1024+3 
+        q = self.mlp_query(query_feature.transpose(1,2)).transpose(1,2) # B M C(embed_dim) 
         # decoder
         for i, blk in enumerate(self.decoder):
             if i < self.knn_layer:

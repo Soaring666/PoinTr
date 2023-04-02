@@ -29,7 +29,7 @@ class Fold(nn.Module):
 
         a = torch.linspace(-1., 1., steps=step, dtype=torch.float).view(1, step).expand(step, step).reshape(1, -1)
         b = torch.linspace(-1., 1., steps=step, dtype=torch.float).view(step, 1).expand(step, step).reshape(1, -1)
-        self.folding_seed = torch.cat([a, b], dim=0).cuda()
+        self.folding_seed = torch.cat([a, b], dim=0).cuda()  #(2, step*step)
 
         self.folding1 = nn.Sequential(
             nn.Conv1d(in_channel + 2, hidden_dim, 1),
@@ -52,6 +52,7 @@ class Fold(nn.Module):
         )
 
     def forward(self, x):
+        # x: (BM, C) 
         num_sample = self.step * self.step
         bs = x.size(0)
         features = x.view(bs, self.in_channel, 1).expand(bs, self.in_channel, num_sample)
@@ -98,6 +99,7 @@ class PoinTr(nn.Module):
         return loss_coarse, loss_fine
 
     def forward(self, xyz):
+        #相当于q为用于folding的全局特征，coarse为粗糙点云只有128个点
         q, coarse_point_cloud = self.base_model(xyz) # B M C and B M 3
     
         B, M ,C = q.shape
@@ -115,7 +117,9 @@ class PoinTr(nn.Module):
         # coarse_point_cloud = self.refine_coarse(rebuild_feature).reshape(B, M, 3)
 
         # NOTE: foldingNet
+        #使用folding net后再划分出M个中心点，和粗糙点云相加可能对局部中心细节重建得更好
         relative_xyz = self.foldingnet(rebuild_feature).reshape(B, M, 3, -1)    # B M 3 S
+        #再加上原始的中心点
         rebuild_points = (relative_xyz + coarse_point_cloud.unsqueeze(-1)).transpose(2,3).reshape(B, -1, 3)  # B N 3
 
         # NOTE: fc
@@ -123,6 +127,7 @@ class PoinTr(nn.Module):
         # rebuild_points = (relative_xyz.reshape(B,M,3,-1) + coarse_point_cloud.unsqueeze(-1)).transpose(2,3).reshape(B, -1, 3)
 
         # cat the input
+        # 获取初始输入点云的最远点采样，即大体的残缺点云形状
         inp_sparse = fps(xyz, self.num_query)
         coarse_point_cloud = torch.cat([coarse_point_cloud, inp_sparse], dim=1).contiguous()
         rebuild_points = torch.cat([rebuild_points, xyz],dim=1).contiguous()

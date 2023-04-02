@@ -74,7 +74,7 @@ class DGCNN_Grouper(nn.Module):
         """
         input: 
             coor: b, 3, n
-            x: b, f, n 3
+            x: b, f, n 
             num_group: the number of center points
         output:
             new_coor: b, 3, num_group(the coordinates of the center point)
@@ -103,10 +103,11 @@ class DGCNN_Grouper(nn.Module):
             coor_q: the coordinate of center points 
             x_q: (bs, nq, c)the feature of center points
             coor_k: the coordinates of all points
-            x_k: (bs, np, c)the feature of all points
+            x_k: (bs, nk, c)the feature of all points
 
         output:
             features: bs, 2*c, nq, k(16)(nsamples)
+            所得到的feature是原始的x_q的feature和knn的feature与x_q的相对差cat起来的
         """
 
         k = 16
@@ -116,14 +117,14 @@ class DGCNN_Grouper(nn.Module):
 
         with torch.no_grad():
 #             _, idx = knn(coor_k, coor_q)  # bs k np
-            idx = knn_point(k, coor_k.transpose(-1, -2).contiguous(), coor_q.transpose(-1, -2).contiguous()) # B G M
+            idx = knn_point(k, coor_k.transpose(-1, -2).contiguous(), coor_q.transpose(-1, -2).contiguous()) # B nq k
             idx = idx.transpose(-1, -2).contiguous()    #(B, k(nsample), S)
             assert idx.shape[1] == k
             idx_base = torch.arange(0, batch_size, device=x_q.device).view(-1, 1, 1) * num_points_k
             idx = idx + idx_base
             idx = idx.view(-1)  #(B*k*S)
         num_dims = x_k.size(1)
-        x_k = x_k.transpose(2, 1).contiguous()  #(bs, np, c)
+        x_k = x_k.transpose(2, 1).contiguous()  #(bs, nk, c)
         feature = x_k.view(batch_size * num_points_k, -1)[idx, :]   #(B*k*S, c)
         feature = feature.view(batch_size, k, num_points_q, num_dims).permute(0, 3, 2, 1).contiguous()
         x_q = x_q.view(batch_size, num_dims, num_points_q, 1).expand(-1, -1, -1, k) #(bs, c, nq, k)
