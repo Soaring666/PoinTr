@@ -115,7 +115,7 @@ class Attention(nn.Module):
     def forward(self, x):
         B, N, C = x.shape
         qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, C // self.num_heads).permute(2, 0, 3, 1, 4)  #(B, N, 3, 8, C/8) -> (3, B, 8, N, C/8)
-        q, k, v = qkv[0], qkv[1], qkv[2]   # make torchscript happy (cannot use tensor as tuple)
+        q, k, v = qkv[0], qkv[1], qkv[2]   #(B, 8, N, C/8) make torchscript happy (cannot use tensor as tuple)
 
         attn = (q @ k.transpose(-2, -1)) * self.scale  #(B, 8, N, N)
         attn = attn.softmax(dim=-1)
@@ -152,7 +152,7 @@ class CrossAttention(nn.Module):
         k = v
         NK = k.size(1)
 
-        q = self.q_map(q).view(B, N, self.num_heads, C // self.num_heads).permute(0, 2, 1, 3)
+        q = self.q_map(q).view(B, N, self.num_heads, C // self.num_heads).permute(0, 2, 1, 3)  #(B, 8, N, C/8)
         k = self.k_map(k).view(B, NK, self.num_heads, C // self.num_heads).permute(0, 2, 1, 3)
         v = self.v_map(v).view(B, NK, self.num_heads, C // self.num_heads).permute(0, 2, 1, 3)
 
@@ -166,7 +166,7 @@ class CrossAttention(nn.Module):
         return x        
 
 class DecoderBlock(nn.Module):
-    """transform 中的decoder模块，即对value的值进行改变"""
+    """transform 中的decoder模块,即对value的值进行改变"""
     def __init__(self, dim, num_heads, dim_q = None, mlp_ratio=4., qkv_bias=False, qk_scale=None, drop=0., attn_drop=0.,
                  drop_path=0., act_layer=nn.GELU, norm_layer=nn.LayerNorm):
         super().__init__()
@@ -322,7 +322,7 @@ class PCTransformer(nn.Module):
             nn.Conv1d(embed_dim, embed_dim, 1)
         )
         
-        #对自身计算atten，并聚合knn特征，不改变shape
+        #自注意力层聚合特征，并聚合knn特征，不改变shape
         self.encoder = nn.ModuleList([
             Block(
                 dim=embed_dim, num_heads=num_heads, mlp_ratio=mlp_ratio, qkv_bias=qkv_bias, qk_scale=qk_scale,
@@ -421,7 +421,9 @@ class PCTransformer(nn.Module):
         # x = torch.cat([cls_token, x], dim=1)
         # pos = torch.cat([cls_pos, pos], dim=1)
         # encoder
-        for i, blk in enumerate(self.encoder):  #对于一次knn，聚合多次特征
+
+        #blk为自注意力和knn聚合特征，但对于knn的特征只聚合knn_layer次，形状不变
+        for i, blk in enumerate(self.encoder):  
             if i < self.knn_layer:
                 x = blk(x + pos, knn_index)   # (B, N, C)B 128 768
             else:

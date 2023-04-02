@@ -16,6 +16,7 @@ def log_config_to_file(cfg, pre='cfg', logger=None):
         print_log(f'{pre}.{key} : {val}', logger = logger)
 
 def merge_new_config(config, new_config):
+    #使用递归打开文件并将文件读取为字典
     for key, val in new_config.items():
         if not isinstance(val, dict):
             if key == '_base_':

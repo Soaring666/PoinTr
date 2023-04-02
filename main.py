@@ -54,6 +54,7 @@ def main():
     if args.seed is not None:
         logger.info(f'Set random seed to {args.seed}, '
                     f'deterministic: {args.deterministic}')
+        #可以把cudnn.benchmark设为True加快速度
         misc.set_random_seed(args.seed + args.local_rank, deterministic=args.deterministic) # seed + rank, for augmentation
     if args.distributed:
         assert args.local_rank == torch.distributed.get_rank() 
