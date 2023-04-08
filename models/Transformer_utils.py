@@ -105,11 +105,12 @@ class Attention(nn.Module):
         attn = (q @ k.transpose(-2, -1)) * self.scale
 
         if mask is not None:
+            #加入这个噪声掩码是因为在处理训练数据的时候加进了64个噪声点，即经过了数据增强
             # 1 for mask, 0 for not mask
             # mask shape N, N
             mask_value = -torch.finfo(attn.dtype).max
             mask = (mask > 0)  # convert to boolen, shape torch.BoolTensor[N, N]
-            attn = attn.masked_fill(mask, mask_value) # B h N N
+            attn = attn.masked_fill(mask, mask_value) # B 6 576 576
 
         attn = attn.softmax(dim=-1)
         attn = self.attn_drop(attn)
@@ -811,7 +812,7 @@ class DynamicGraphAttention(nn.Module):
             # gather the neighbor point feat
             local_v = index_points(v, idx) # B N k C 
             q = q.unsqueeze(-2).expand(-1, -1, self.k, -1) # B N k C
-            feature = torch.cat((local_v - q, q), dim=-1) # B N k C
+            feature = torch.cat((local_v - q, q), dim=-1) # B N k 2C
             out = self.knn_map(feature).max(-2)[0] # B N C
 
             assert out.size(0) == B
@@ -834,13 +835,15 @@ class DynamicGraphAttention(nn.Module):
 
             # normal reconstruction task:
             # first query a neighborhood for one query token for normal part
-            idx = knn_point(self.k, v_pos[:, :-denoise_length], q_pos[:, :-denoise_length]) # B N_r k 
+            #对于未加噪声的点寻找邻接点
+            idx = knn_point(self.k, v_pos[:, :-denoise_length], q_pos[:, :-denoise_length]) # B N_r k (B, 512, 8)
             assert idx.size(-1) == self.k
             # gather the neighbor point feat
             local_v_r = index_points(v[:, :-denoise_length], idx) # B N_r k C 
             
             # Then query a nerighborhood for denoise token within all token
-            idx = knn_point(self.k, v_pos, q_pos[:, -denoise_length:]) # B N_n k 
+            #对于加了噪声的点寻找邻接点
+            idx = knn_point(self.k, v_pos, q_pos[:, -denoise_length:]) # B N_n k  (B, 64, 8)
             assert idx.size(-1) == self.k
             assert idx.size(1) == denoise_length
             # gather the neighbor point feat
