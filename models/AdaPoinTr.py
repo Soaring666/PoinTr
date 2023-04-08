@@ -73,9 +73,11 @@ class SelfAttnBlockApi(nn.Module):
             if self.combine_style == 'concat':
                 norm_x = self.norm1(x)
                 if self.attn is not None:
+                    #对自身的特征进行自注意力编码
                     global_attn_feat = self.attn(norm_x)
                     feature_list.append(global_attn_feat)
                 if self.local_attn is not None:
+                    #聚合idx中的特征
                     local_attn_feat = self.local_attn(norm_x, pos, idx=idx)
                     feature_list.append(local_attn_feat)
                 # combine
@@ -231,7 +233,7 @@ class CrossAttnBlockApi(nn.Module):
         # Self attn
         feature_list = []
         if self.self_attn_block_length == 2:
-            if self.self_attn_combine_style == 'concat':
+            if self.self_attn_combine_style == 'concat':    #使用concat
                 norm_q = self.norm1(q)
                 if self.self_attn is not None:
                     global_attn_feat = self.self_attn(norm_q, mask=mask)
@@ -241,7 +243,7 @@ class CrossAttnBlockApi(nn.Module):
                     feature_list.append(local_attn_feat)
                 # combine
                 if len(feature_list) == 2:
-                    f = torch.cat(feature_list, dim=-1)
+                    f = torch.cat(feature_list, dim=-1)  #(B, 576, 768)
                     f = self.self_attn_merge_map(f)
                     q = q + self.drop_path1(self.ls1(f))
                 else:
@@ -360,7 +362,7 @@ class TransformerDecoder(nn.Module):
             self_attn_idx = knn_point(self.k, q_pos, q_pos)
         else:
             self_attn_idx = None
-        cross_attn_idx = knn_point(self.k, v_pos, q_pos)
+        cross_attn_idx = knn_point(self.k, v_pos, q_pos)    #(B, 576, 8)
         for _, block in enumerate(self.blocks):
             q = block(q, v, q_pos, v_pos, self_attn_idx=self_attn_idx, cross_attn_idx=cross_attn_idx, denoise_length=denoise_length)
         return q
@@ -800,6 +802,7 @@ class PCTransformer(nn.Module):
             nn.GELU(),
             nn.Linear(1024, 3 * query_num)
         )
+        #线性层相当于只对每个点的维度进行加权和
         self.mlp_query = nn.Sequential(
             nn.Linear(global_feature_dim + 3, 1024),
             nn.GELU(),
@@ -837,41 +840,49 @@ class PCTransformer(nn.Module):
 
     def forward(self, xyz):
         bs = xyz.size(0)
-        coor, f = self.grouper(xyz, self.center_num) # b n c
-        pe =  self.pos_embed(coor)
-        x = self.input_proj(f)
+        coor, f = self.grouper(xyz, self.center_num) # b n c (B, 256, 3)/(B, 256, 128)
+        pe =  self.pos_embed(coor)  #(B, 256, 384)
+        x = self.input_proj(f)      #(B, 256, 384)
 
-        x = self.encoder(x + pe, coor) # b n c
-        global_feature = self.increase_dim(x) # B 1024 N 
+        #use self-attention to encoder, and loop 6 epoch
+        x = self.encoder(x + pe, coor) # b n c  (B, 256, 384)
+        global_feature = self.increase_dim(x) # B N 1024
         global_feature = torch.max(global_feature, dim=1)[0] # B 1024
 
-        coarse = self.coarse_pred(global_feature).reshape(bs, -1, 3)
+        #这是预测出来的点
+        coarse = self.coarse_pred(global_feature).reshape(bs, -1, 3)    #(B, 512, 3)
 
-        coarse_inp = misc.fps(xyz, self.num_query//2) # B 128 3
-        coarse = torch.cat([coarse, coarse_inp], dim=1) # B 224+128 3?
+        #这是原始点云的fps采样
+        coarse_inp = misc.fps(xyz, self.num_query//2) # B 256 3
+        #cat the fps of origin with predicted points
+        coarse = torch.cat([coarse, coarse_inp], dim=1) # B 256+512 3
 
-        mem = self.mem_link(x)
+        mem = self.mem_link(x)      #(B, 256, 384)
 
-        # query selection
-        query_ranking = self.query_ranking(coarse) # b n 1
-        idx = torch.argsort(query_ranking, dim=1, descending=True) # b n 1
-        coarse = torch.gather(coarse, 1, idx[:,:self.num_query].expand(-1, -1, coarse.size(-1)))
+        #transe pos dim to 1 for the coarse points
+        query_ranking = self.query_ranking(coarse) # b 768 1
+        #return the rank idx of coarse points
+        idx = torch.argsort(query_ranking, dim=1, descending=True) # b 768 1
+        #downsample the coarse points from 768 points to 512 points
+        coarse = torch.gather(coarse, 1, idx[:,:self.num_query].expand(-1, -1, coarse.size(-1)))    #(B, 512, 3)
 
         if self.training:
+            #在线过程中给训练集添加噪声
             # add denoise task
             # first pick some point : 64?
             picked_points = misc.fps(xyz, 64)
             picked_points = misc.jitter_points(picked_points)
-            coarse = torch.cat([coarse, picked_points], dim=1) # B 256+64 3?
+            coarse = torch.cat([coarse, picked_points], dim=1) # B 576 3
             denoise_length = 64     
 
             # produce query
             q = self.mlp_query(
             torch.cat([
                 global_feature.unsqueeze(1).expand(-1, coarse.size(1), -1),
-                coarse], dim = -1)) # b n c
+                coarse], dim = -1)) # b 576 384
 
             # forward decoder
+            #q为动态的query，v为对输入特征的编码
             q = self.decoder(q=q, v=mem, q_pos=coarse, v_pos=coor, denoise_length=denoise_length)
 
             return q, coarse, denoise_length
@@ -933,7 +944,7 @@ class AdaPoinTr(nn.Module):
         assert pred_fine.size(1) == gt.size(1)
 
         # denoise loss
-        idx = knn_point(self.factor, gt, denoised_coarse) # B n k 
+        idx = knn_point(self.factor, gt, denoised_coarse) # B n k  (B 64 32) 
         denoised_target = index_points(gt, idx) # B n k 3 
         denoised_target = denoised_target.reshape(gt.size(0), -1, 3)
         assert denoised_target.size(1) == denoised_fine.size(1)
@@ -945,9 +956,12 @@ class AdaPoinTr(nn.Module):
         loss_fine = self.loss_func(pred_fine, gt)
         loss_recon = loss_coarse + loss_fine
 
-        return loss_denoised, loss_recon
+        #将fine和recon的loss分开
+        return loss_denoised, loss_coarse, loss_fine
+        # return loss_denoised, loss_reco
 
     def forward(self, xyz):
+        #q is the decodered coarse points 
         q, coarse_point_cloud, denoise_length = self.base_model(xyz) # B M C and B M 3
     
         B, M ,C = q.shape
@@ -968,6 +982,7 @@ class AdaPoinTr(nn.Module):
             rebuild_points = (relative_xyz + coarse_point_cloud.unsqueeze(-1)).transpose(2,3)  # B M S 3
 
         else:
+            #不再使用folding net重建,而是只用简单的mlp
             rebuild_feature = self.reduce_map(rebuild_feature) # B M C
             relative_xyz = self.decode_head(rebuild_feature)   # B M S 3
             rebuild_points = (relative_xyz + coarse_point_cloud.unsqueeze(-2))  # B M S 3

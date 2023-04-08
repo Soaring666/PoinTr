@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 import os
+import wandb
 import json
 from tools import builder
 from utils import misc, dist_utils
@@ -9,6 +10,9 @@ from utils.logger import *
 from utils.AverageMeter import AverageMeter
 from utils.metrics import Metrics
 from extensions.chamfer_dist import ChamferDistanceL1, ChamferDistanceL2
+
+wandb.login()
+run = wandb.init(project='PoinTr')
 
 def run_net(args, config, train_writer=None, val_writer=None):
     logger = get_logger(args.log_name)
@@ -114,8 +118,13 @@ def run_net(args, config, train_writer=None, val_writer=None):
            
             ret = base_model(partial)
             
-            sparse_loss, dense_loss = base_model.module.get_loss(ret, gt, epoch)
-         
+            sparse_loss, loss_coarse, loss_fine = base_model.module.get_loss(ret, gt, epoch)
+            dense_loss = loss_coarse + loss_fine
+            # sparse_loss, dense_loss = base_model.module.get_loss(ret, gt, epoch)
+            wandb.log({"Loss/Batch/Sparse": sparse_loss.item() * 1000,
+                       "Loss/Batch/Coarse": loss_coarse.item() * 1000,
+                       "Loss/Batch/Fine": loss_fine.item() * 1000})
+
             _loss = sparse_loss + dense_loss 
             _loss.backward()
 
@@ -138,6 +147,7 @@ def run_net(args, config, train_writer=None, val_writer=None):
                 torch.cuda.synchronize()
 
             n_itr = epoch * n_batches + idx
+            
             if train_writer is not None:
                 train_writer.add_scalar('Loss/Batch/Sparse', sparse_loss.item() * 1000, n_itr)
                 train_writer.add_scalar('Loss/Batch/Dense', dense_loss.item() * 1000, n_itr)
