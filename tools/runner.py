@@ -200,7 +200,7 @@ def validate(base_model, test_dataloader, epoch, ChamferDisL1, ChamferDisL2, val
     test_losses = AverageMeter(['SparseLossL1', 'SparseLossL2', 'DenseLossL1', 'DenseLossL2'])
     test_metrics = AverageMeter(Metrics.names())
     category_metrics = dict()
-    n_samples = len(test_dataloader) # bs is 1
+    n_samples = len(test_dataloader) # 1200, bs is 1
 
     interval =  n_samples // 10
 
@@ -275,8 +275,10 @@ def validate(base_model, test_dataloader, epoch, ChamferDisL1, ChamferDisL2, val
                 print_log('Test[%d/%d] Taxonomy = %s Sample = %s Losses = %s Metrics = %s' %
                             (idx + 1, n_samples, taxonomy_id, model_id, ['%.4f' % l for l in test_losses.val()], 
                             ['%.4f' % m for m in _metrics]), logger=logger)
+        #遍历字典
         for _,v in category_metrics.items():
             test_metrics.update(v.avg())
+        #输出的平均值不是总体的平均值，而是每个类的平均值的平均值，好像就是论文中的表格那样计算方式
         print_log('[Validation] EPOCH: %d  Metrics = %s' % (epoch, ['%.4f' % m for m in test_metrics.avg()]), logger=logger)
 
         if args.distributed:
