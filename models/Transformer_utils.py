@@ -51,10 +51,10 @@ def square_distance(src, dst):
 def index_points(points, idx):
     """
     Input:
-        points: input points data, [B, N, C]
-        idx: sample index data, [B, S]
+        points: input points data, all points, [B, N, C]
+        idx: sample index data, [B, S, nsample]
     Return:
-        new_points:, indexed points data, [B, S, C]
+        new_points of the idx all_points: indexed points data, [B, S, nsample, C]
     """
     device = points.device
     B = points.shape[0]

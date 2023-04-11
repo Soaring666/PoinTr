@@ -547,6 +547,7 @@ class DGCNN_Grouper(nn.Module):
 
         combined_x = torch.cat([coor, x], dim=1)
 
+        #将fps采样得到idx转化为具体的点
         new_combined_x = (
             pointnet2_utils.gather_operation(
                 combined_x, fps_idx
@@ -561,6 +562,7 @@ class DGCNN_Grouper(nn.Module):
     def get_graph_feature(self, coor_q, x_q, coor_k, x_k):
 
         # coor: bs, 3, np, x: bs, c, np
+        # q: center points  k: all points
 
         k = self.k
         batch_size = x_k.size(0)
@@ -569,7 +571,7 @@ class DGCNN_Grouper(nn.Module):
 
         with torch.no_grad():
             # _, idx = self.knn(coor_k, coor_q)  # bs k np
-            idx = knn_point(k, coor_k.transpose(-1, -2).contiguous(), coor_q.transpose(-1, -2).contiguous()) # B G M
+            idx = knn_point(k, coor_k.transpose(-1, -2).contiguous(), coor_q.transpose(-1, -2).contiguous()) # B S nsample
             idx = idx.transpose(-1, -2).contiguous()
             assert idx.shape[1] == k
             idx_base = torch.arange(0, batch_size, device=x_q.device).view(-1, 1, 1) * num_points_k
