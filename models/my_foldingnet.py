@@ -151,14 +151,9 @@ class Decoder(nn.Module):
         super(Decoder, self).__init__()
 
         # Sample the grids in 2D space
-        xx = np.linspace(-0.3, 0.3, 45, dtype=np.float32)
-        yy = np.linspace(-0.3, 0.3, 45, dtype=np.float32)
-        self.grid = np.meshgrid(xx, yy)   # (2, 45, 45)
-
-        # reshape
-        self.grid = torch.Tensor(self.grid).view(2, -1)  # (2, 45, 45) -> (2, 45 * 45)
+        self.grid_size = 45
         
-        self.m = self.grid.shape[1]
+        self.m = self.grid_size * self.grid_size
 
         self.fold1 = FoldingLayer(in_channel + 2, [512, 512, 3])
         self.fold2 = FoldingLayer(in_channel + 3, [512, 512, 3])
@@ -169,8 +164,13 @@ class Decoder(nn.Module):
         """
         batch_size = x.shape[0]
 
+        #foldingnet seed
+        a = torch.linspace(-0.3, 0.3, steps=self.grid_size, dtype=torch.float).view(1, self.grid_size).expand(self.grid_size, self.grid_size).reshape(1, -1)
+        b = torch.linspace(-0.3, 0.3, steps=self.grid_size, dtype=torch.float).view(self.grid_size, 1).expand(self.grid_size, self.grid_size).reshape(1, -1)
+        grid = torch.cat([a, b], dim=0) # (2 45*45)
+
         # repeat grid for batch operation
-        grid = self.grid.to(x.device)                      # (2, 45 * 45)
+        grid = grid.to(x.device)                      # (2, 45 * 45)
         grid = grid.unsqueeze(0).repeat(batch_size, 1, 1)  # (B, 2, 45 * 45)
         
         # repeat codewords
@@ -183,7 +183,7 @@ class Decoder(nn.Module):
         return recon2
 
 
-class FoldingNet(nn.Module):
+class my_foldingNet(nn.Module):
     def __init__(self):
         super().__init__()
 
@@ -198,4 +198,5 @@ class FoldingNet(nn.Module):
     def forward(self, x):
         global_feature = self.encoder(x)   #(b, 512)
         x = self.decoder(global_feature)   #(b, 3, 45*45)
+        x.transpose(-1, -2)
         return x

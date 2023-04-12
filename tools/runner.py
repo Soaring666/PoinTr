@@ -11,19 +11,23 @@ from utils.AverageMeter import AverageMeter
 from utils.metrics import Metrics
 from extensions.chamfer_dist import ChamferDistanceL1, ChamferDistanceL2
 
-wandb.login()
-run = wandb.init(project='PoinTr')
+# os.environ["CUDA_VISIBLE_DEVICES"] = '1'
+# device = torch.device('cuda:1' if torch.cuda.is_available() else 'cpu')
 
-os.environ["CUDA_VISIBLE_DEVICES"] = '1'
 def run_net(args, config, train_writer=None, val_writer=None):
+
+    wandb.login()
+    run = wandb.init(project='PoinTr')
+
     logger = get_logger(args.log_name)
     # build dataset
     (train_sampler, train_dataloader), (_, test_dataloader) = builder.dataset_builder(args, config.dataset.train), \
                                                             builder.dataset_builder(args, config.dataset.val)
+                                                    
     # build model
     base_model = builder.model_builder(config.model)
     if args.use_gpu:
-        base_model.to(args.local_rank)
+        base_model = base_model.cuda()
 
     # from IPython import embed; embed()
     

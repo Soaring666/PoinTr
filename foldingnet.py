@@ -1,35 +1,37 @@
 import torch
-import torch.nn as nn
 import os
 import wandb
 import json
 import torch.optim as optim
-import time
-from utils import parser, dist_utils, misc
+from utils import parser, misc
 from utils.config import *
 from tqdm import tqdm
-from tools import builder
-from utils import misc, dist_utils
+from my_datasets.my_PCN import get_dataloader
+from utils import misc
 from utils.logger import *
 from utils.AverageMeter import AverageMeter
 from utils.metrics import Metrics
-from extensions.chamfer_dist import ChamferDistanceL1, ChamferDistanceL2
-from models.foldingnet import FoldingNet
+from extensions.chamfer_dist import ChamferDistanceL1
+from models.my_foldingnet import my_foldingNet
 
-wandb.login()
-run = wandb.init(project='my_foldingnet')
-start_epoch = 0
-max_epoch = 400
-lr = 1e-4
-weight_decay=1e-6
+
+# os.environ["CUDA_VISIBLE_DEVICES"] = '1'
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
+def main(args, config):
 
-def run_net(args, config, train_writer=None, val_writer=None):
-    (train_sampler, train_dataloader), (_, test_dataloader) = builder.dataset_builder(args, config.dataset.train), \
-                                                            builder.dataset_builder(args, config.dataset.val)
+    wandb.login()
+    run = wandb.init(project='my_foldingnet')
+    start_epoch = 0
+    max_epoch = 400
+    lr = 1e-4
+    weight_decay=1e-6
 
-    model = FoldingNet().to(device)
+    model = my_foldingNet().to(device)
+    train_dataloader, test_dataloader = get_dataloader(config, args)
+    # (train_sampler, train_dataloader), (_, test_dataloader) = dataset_builder(args, config.dataset.train), \
+    #                                                         dataset_builder(args, config.dataset.val)
+
     optimizer = optim.Adam(model.parameters(), lr=lr, betas=[0.9, 0.999], weight_decay=weight_decay)
 
     for epoch in range(start_epoch, max_epoch):
@@ -38,7 +40,8 @@ def run_net(args, config, train_writer=None, val_writer=None):
         for (taxonomy_ids, model_ids, data) in tqdm(train_dataloader):
             gt = data[1].to(device)
             recon = model(gt)
-            loss = model.get_loss(recon, gt)
+            loss_func = ChamferDistanceL1().to(device)
+            loss = loss_func(recon, gt)
             loss.backward()
             optimizer.step()
 
@@ -118,6 +121,6 @@ if __name__ == '__main__':
     args.distributed = False
     config = get_config(args)
     config.dataset.train.others.bs = config.total_bs
-    run_net(args, config)
+    main(args, config)
 
 
