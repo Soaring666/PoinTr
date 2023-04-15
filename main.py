@@ -1,10 +1,12 @@
+import os
+os.environ["CUDA_VISIBLE_DEVICES"] = '0'
+
 from tools import run_net
 from tools import test_net
 from utils import parser, dist_utils, misc
 from utils.logger import *
 from utils.config import *
 import time
-import os
 import torch
 from tensorboardX import SummaryWriter
 

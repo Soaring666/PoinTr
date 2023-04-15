@@ -3,9 +3,11 @@ import torch.nn as nn
 import os
 import wandb
 import json
+import time
+import copy
+from PIL import Image
 from tools import builder
 from utils import misc, dist_utils
-import time
 from utils.logger import *
 from utils.AverageMeter import AverageMeter
 from utils.metrics import Metrics
@@ -121,8 +123,20 @@ def run_net(args, config, train_writer=None, val_writer=None):
 
             num_iter += 1
            
-            ret = base_model(partial)
+            ret = base_model(gt)    #folding_AE
+            # ret = base_model(partial)     #general
             
+            #foldingnet损失
+            #为代码方便,令sparse_loss为loss_coarse
+            sparse_loss, dense_loss = base_model.module.get_loss(ret, gt, epoch)
+            _loss = sparse_loss + dense_loss 
+            _loss.backward()
+            wandb.log({"Loss/Batch/Sparse": sparse_loss.item() * 1000,
+                       "Loss/Batch/Coarse": dense_loss.item() * 1000})
+            
+
+            '''
+            pointr损失
             sparse_loss, loss_coarse, loss_fine = base_model.module.get_loss(ret, gt, epoch)
             dense_loss = loss_coarse + loss_fine
             # sparse_loss, dense_loss = base_model.module.get_loss(ret, gt, epoch)
@@ -132,7 +146,7 @@ def run_net(args, config, train_writer=None, val_writer=None):
 
             _loss = sparse_loss + dense_loss 
             _loss.backward()
-
+            '''
             # forward
             if num_iter == config.step_per_update:
                 torch.nn.utils.clip_grad_norm_(base_model.parameters(), getattr(config, 'grad_norm_clip', 10), norm_type=2)
@@ -208,6 +222,14 @@ def validate(base_model, test_dataloader, epoch, ChamferDisL1, ChamferDisL2, val
 
     interval =  n_samples // 10
 
+    #创建保存图片的文件夹
+    save_pth = os.path.join(args.saveimg_path, 'epoch%d' % epoch)
+    os.makedirs(save_pth, exist_ok=True)
+    gt_pth = os.path.join(save_pth, 'gt')
+    os.makedirs(gt_pth, exist_ok=True)
+    recon_pth = os.path.join(save_pth, 'recon')
+    os.makedirs(recon_pth, exist_ok=True)
+
     with torch.no_grad():
         for idx, (taxonomy_ids, model_ids, data) in enumerate(test_dataloader):
             taxonomy_id = taxonomy_ids[0] if isinstance(taxonomy_ids[0], str) else taxonomy_ids[0].item()
@@ -225,9 +247,26 @@ def validate(base_model, test_dataloader, epoch, ChamferDisL1, ChamferDisL2, val
             else:
                 raise NotImplementedError(f'Train phase do not support {dataset_name}')
 
-            ret = base_model(partial)
+            ret = base_model(gt)       #folding_AE
+            # ret = base_model(partial)     #general
             coarse_points = ret[0]
             dense_points = ret[-1]
+            recon = copy.deepcopy(dense_points)
+            
+            #保存图片
+            if idx % 500 == 0:
+                input_gt = gt.squeeze().detach().cpu().numpy()
+                input_gt = misc.get_ptcloud_img(input_gt)
+                im = Image.fromarray(input_gt)
+                gt_savepth = os.path.join(gt_pth, '%s.jpg' % model_ids)
+                im.save(gt_savepth)
+
+                recon = recon.squeeze().detach().cpu().numpy()
+                recon = misc.get_ptcloud_img(recon)
+                im = Image.fromarray(recon)
+                recon_savepth = os.path.join(recon_pth, '%s.jpg' % model_ids)
+                im.save(recon_savepth)
+
 
             sparse_loss_l1 =  ChamferDisL1(coarse_points, gt)
             sparse_loss_l2 =  ChamferDisL2(coarse_points, gt)
@@ -279,10 +318,12 @@ def validate(base_model, test_dataloader, epoch, ChamferDisL1, ChamferDisL2, val
                 print_log('Test[%d/%d] Taxonomy = %s Sample = %s Losses = %s Metrics = %s' %
                             (idx + 1, n_samples, taxonomy_id, model_id, ['%.4f' % l for l in test_losses.val()], 
                             ['%.4f' % m for m in _metrics]), logger=logger)
+
         #遍历字典
         for _,v in category_metrics.items():
             test_metrics.update(v.avg())
-        #输出的平均值不是总体的平均值，而是每个类的平均值的平均值，好像就是论文中的表格那样计算方式
+
+       #输出的平均值不是总体的平均值，而是每个类的平均值的平均值，好像就是论文中的表格那样计算方式
         print_log('[Validation] EPOCH: %d  Metrics = %s' % (epoch, ['%.4f' % m for m in test_metrics.avg()]), logger=logger)
 
         if args.distributed:
@@ -320,6 +361,24 @@ def validate(base_model, test_dataloader, epoch, ChamferDisL1, ChamferDisL2, val
         val_writer.add_scalar('Loss/Epoch/Dense', test_losses.avg(2), epoch)
         for i, metric in enumerate(test_metrics.items):
             val_writer.add_scalar('Metric/%s' % metric, test_metrics.avg(i), epoch)
+
+    #使用wandb track
+    wandb.log({'test_CDL1_epoch': test_metrics.avg()[1]})
+    columns = ['Taxonomy', 'ClassName', 'nsamples', 'F1_Score', 'CDL1', 'CDL2', 'EMD']
+    data = []
+    for taxonomy_id in category_metrics:
+        data_id = [taxonomy_id, shapenet_dict[taxonomy_id], str(category_metrics[taxonomy_id].count(0))]
+        for value in category_metrics[taxonomy_id].avg():
+            data_id.append(value)
+        data.append(data_id)
+    data_all = ['overall', '', '']
+    for value in test_metrics.avg():
+        data_all.append(value)
+    data.append(data_all)
+
+    table = wandb.Table(data=data, columns=columns)
+    wandb.log({'test_table': table})
+
 
     return Metrics(config.consider_metric, test_metrics.avg())
 

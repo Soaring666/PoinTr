@@ -7,7 +7,7 @@ def get_args():
     parser.add_argument(
         '--config', 
         type = str, 
-        default = './cfgs/PCN_models/AdaPoinTr.yaml', 
+        default = './cfgs/PCN_models/FoldingNet_AE.yaml', 
         help = 'yaml config file')
     parser.add_argument(
         '--launcher',
@@ -32,7 +32,7 @@ def get_args():
     parser.add_argument('--exp_name', type = str, default='default', help = 'experiment name')
     parser.add_argument('--start_ckpts', type = str, default=None, help = 'reload used ckpt path')
     parser.add_argument('--ckpts', type = str, default=None, help = 'test used ckpt path')
-    parser.add_argument('--val_freq', type = int, default=1, help = 'test freq')
+    parser.add_argument('--val_freq', type = int, default=20, help = 'test freq')
     parser.add_argument(
         '--resume', 
         action='store_true', 
@@ -70,6 +70,7 @@ def get_args():
     if args.mode is not None:
         args.exp_name = args.exp_name + '_' +args.mode
     args.experiment_path = os.path.join('./experiments', Path(args.config).stem, Path(args.config).parent.stem, args.exp_name)
+    args.saveimg_path = os.path.join('./experiments', Path(args.config).stem, Path(args.config).parent.stem, 'save_img')
     args.tfboard_path = os.path.join('./experiments', Path(args.config).stem, Path(args.config).parent.stem,'TFBoard' ,args.exp_name)
     args.log_name = Path(args.config).stem
     create_experiment_dir(args)
@@ -79,6 +80,9 @@ def create_experiment_dir(args):
     if not os.path.exists(args.experiment_path):
         os.makedirs(args.experiment_path, exist_ok=True)
         print('Create experiment path successfully at %s' % args.experiment_path)
+    if not os.path.exists(args.saveimg_path):
+        os.makedirs(args.saveimg_path, exist_ok=True)
+        print('Create saveimg path successfully at %s' % args.saveimg_path)
     if not os.path.exists(args.tfboard_path):
         os.makedirs(args.tfboard_path, exist_ok=True)
         print('Create TFBoard path successfully at %s' % args.tfboard_path)

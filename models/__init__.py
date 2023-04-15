@@ -6,4 +6,5 @@ import models.PCN
 import models.FoldingNet
 import models.SnowFlakeNet
 import models.AdaPoinTr
-import models.my_foldingnet
+import models.knn_foldingnet
+import models.FoldingNet_AE

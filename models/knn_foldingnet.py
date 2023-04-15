@@ -8,6 +8,7 @@ from extensions.chamfer_dist import ChamferDistanceL1
 from .build import MODELS, build_model_from_cfg
 from models.Transformer_utils import *
 from utils import misc
+from .build import MODELS
 
 
 class GraphLayer(nn.Module):
@@ -74,6 +75,7 @@ class Encoder(nn.Module):
         b, n, c = x.size()
 
         # get the covariances, reshape and concatenate with x
+        # 由于x有16384个点，所以使用knn聚合特征非常地低效
         knn_idx = knn_point(self.k, x, x)   # B, N, k=16  
         # knn_idx = knn(x, k=16)
         knn_x = index_points(x, knn_idx)  # (b, n, 16, 3)
@@ -147,11 +149,11 @@ class Decoder(nn.Module):
         recon: recon points, (b, 3, 45*45)
     """
 
-    def __init__(self, in_channel=512):
+    def __init__(self, grid_size, in_channel=512):
         super(Decoder, self).__init__()
 
         # Sample the grids in 2D space
-        self.grid_size = 45
+        self.grid_size = grid_size
         
         self.m = self.grid_size * self.grid_size
 
@@ -167,14 +169,14 @@ class Decoder(nn.Module):
         #foldingnet seed
         a = torch.linspace(-0.3, 0.3, steps=self.grid_size, dtype=torch.float).view(1, self.grid_size).expand(self.grid_size, self.grid_size).reshape(1, -1)
         b = torch.linspace(-0.3, 0.3, steps=self.grid_size, dtype=torch.float).view(self.grid_size, 1).expand(self.grid_size, self.grid_size).reshape(1, -1)
-        grid = torch.cat([a, b], dim=0) # (2 45*45)
+        grid = torch.cat([a, b], dim=0) # 2 N, (2 grid_size*grid_size)
 
         # repeat grid for batch operation
-        grid = grid.to(x.device)                      # (2, 45 * 45)
-        grid = grid.unsqueeze(0).repeat(batch_size, 1, 1)  # (B, 2, 45 * 45)
+        grid = grid.to(x.device)                      # (2, N)
+        grid = grid.unsqueeze(0).repeat(batch_size, 1, 1)  # (B, 2, N)
         
         # repeat codewords
-        x = x.unsqueeze(2).repeat(1, 1, self.m)            # (B, 512, 45 * 45)
+        x = x.unsqueeze(2).repeat(1, 1, self.m)            # (B, 512, N)
         
         # two folding operations
         recon1 = self.fold1(grid, x)
@@ -183,12 +185,15 @@ class Decoder(nn.Module):
         return recon2
 
 
-class my_foldingNet(nn.Module):
-    def __init__(self):
+@MODELS.register_module()
+class knn_foldingnet(nn.Module):
+    def __init__(self, config):
         super().__init__()
+        self.num_pred = config.num_pred
+        self.grid_size = int(pow(self.num_pred,0.5) + 0.5)
 
         self.encoder = Encoder()
-        self.decoder = Decoder()
+        self.decoder = Decoder(self.grid_size)
         self.loss_func = ChamferDistanceL1()
     
     def get_loss(self, x, gt):
@@ -197,6 +202,6 @@ class my_foldingNet(nn.Module):
 
     def forward(self, x):
         global_feature = self.encoder(x)   #(b, 512)
-        x = self.decoder(global_feature)   #(b, 3, 45*45)
-        x.transpose(-1, -2)
+        x = self.decoder(global_feature)   #(b, 3, N)
+        x = x.transpose(-1, -2)  #(b, N, 3) N points
         return x

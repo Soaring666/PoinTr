@@ -205,6 +205,7 @@ def seprate_point_cloud(xyz, num_points, crop, fixed_points = None, padding_zero
     return input_data.contiguous(), crop_data.contiguous()
 
 def get_ptcloud_img(ptcloud):
+    #ptcloud: (N, 3)
     fig = plt.figure(figsize=(8, 8))
 
     x, z, y = ptcloud.transpose(1, 0)
