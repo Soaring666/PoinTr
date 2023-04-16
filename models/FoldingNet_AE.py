@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 from .build import MODELS
-from extensions.chamfer_dist import ChamferDistanceL2
+from extensions.chamfer_dist import ChamferDistanceL2, ChamferDistanceL2_split
 
 @MODELS.register_module()
 class FoldingNet_AE(nn.Module):
@@ -50,11 +50,17 @@ class FoldingNet_AE(nn.Module):
         self.build_loss_func()
 
     def build_loss_func(self):
-        self.loss_func = ChamferDistanceL2()
+        self.loss_func = ChamferDistanceL2_split()
 
-    def get_loss(self, ret, gt, epoch=0):
-        loss_coarse = self.loss_func(ret[0], gt)
-        loss_fine = self.loss_func(ret[1], gt)
+    def get_loss(self, ret, gt, epoch):
+        #lambda_loss increase with epoch increase
+        lambda_loss = 1 * (epoch / 50) + 1
+        loss_coarse_dist1, loss_coarse_dist2 = self.loss_func(ret[0], gt)
+        loss_fine_dist1, loss_fine_dist2 = self.loss_func(ret[1], gt)
+        loss_coarse = lambda_loss * loss_coarse_dist1 + loss_coarse_dist2
+        loss_fine = lambda_loss * loss_fine_dist1 + loss_fine_dist2
+        # loss_coarse = self.loss_func(ret[0], gt)
+        # loss_fine = self.loss_func(ret[1], gt)
         return loss_coarse, loss_fine
 
     def forward(self, xyz):

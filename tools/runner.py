@@ -132,7 +132,7 @@ def run_net(args, config, train_writer=None, val_writer=None):
             _loss = sparse_loss + dense_loss 
             _loss.backward()
             wandb.log({"Loss/Batch/Sparse": sparse_loss.item() * 1000,
-                       "Loss/Batch/Coarse": dense_loss.item() * 1000})
+                       "Loss/Batch/dense": dense_loss.item() * 1000})
             
 
             '''
