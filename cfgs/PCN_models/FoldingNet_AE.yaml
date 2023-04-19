@@ -20,8 +20,8 @@ dataset : {
             others: {subset: 'test'}}}
             
 model : {
-  NAME: FoldingNet_AE, num_pred: 16384, encoder_channel: 1024}
-total_bs : 26  
+  NAME: FoldingNet_AE, num_pred: 16384, encoder_channel: 576}
+total_bs : 22
 step_per_update : 1
 max_epoch : 150
 

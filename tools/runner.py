@@ -96,11 +96,15 @@ def run_net(args, config, train_writer=None, val_writer=None):
         batch_time = AverageMeter()
         data_time = AverageMeter()
         losses = AverageMeter(['SparseLoss', 'DenseLoss'])
+        train_CDL2_loss = AverageMeter()
 
         num_iter = 0
 
         base_model.train()  # set model to training mode
         n_batches = len(train_dataloader)
+
+        train_gt_list = []
+        train_recon_list = []
         for idx, (taxonomy_ids, model_ids, data) in enumerate(train_dataloader):
             data_time.update(time.time() - batch_start_time)
             npoints = config.dataset.train._base_.N_POINTS
@@ -122,18 +126,32 @@ def run_net(args, config, train_writer=None, val_writer=None):
                 raise NotImplementedError(f'Train phase do not support {dataset_name}')
 
             num_iter += 1
-           
+            
             ret = base_model(gt)    #folding_AE
             # ret = base_model(partial)     #general
             
             #foldingnet损失
             #为代码方便,令sparse_loss为loss_coarse
             sparse_loss, dense_loss = base_model.module.get_loss(ret, gt, epoch)
+            train_CDL2_loss.update(dense_loss)
             _loss = sparse_loss + dense_loss 
             _loss.backward()
             wandb.log({"Loss/Batch/Sparse": sparse_loss.item() * 1000,
                        "Loss/Batch/dense": dense_loss.item() * 1000})
-            
+
+            if epoch % 20 == 0 and idx == 1:
+                print("save train point cloud")
+                train_gt_0 = gt[0].squeeze().detach().cpu().numpy()
+                train_gt_1 = gt[1].squeeze().detach().cpu().numpy()
+                train_recon_0 = ret[1][0].squeeze().detach().cpu().numpy()
+                train_recon_1 = ret[1][1].squeeze().detach().cpu().numpy()
+                train_gt_list.append(train_gt_0)
+                train_gt_list.append(train_gt_1)
+                train_recon_list.append(train_recon_0)
+                train_recon_list.append(train_recon_1)
+                
+
+           
 
             '''
             pointr损失
@@ -182,6 +200,10 @@ def run_net(args, config, train_writer=None, val_writer=None):
             if config.scheduler.type == 'GradualWarmup':
                 if n_itr < config.scheduler.kwargs_2.total_epoch:
                     scheduler.step()
+            
+        wandb.log({'train_gt': [wandb.Object3D(i) for i in train_gt_list],
+                    'train_recon': [wandb.Object3D(i) for i in train_recon_list]})
+        wandb.log({"Loss/Epoch/dense": train_CDL2_loss.avg() * 1000})
 
         if isinstance(scheduler, list):
             for item in scheduler:
@@ -230,6 +252,8 @@ def validate(base_model, test_dataloader, epoch, ChamferDisL1, ChamferDisL2, val
     recon_pth = os.path.join(save_pth, 'recon')
     os.makedirs(recon_pth, exist_ok=True)
 
+    gt_list = []
+    recon_list = []
     with torch.no_grad():
         for idx, (taxonomy_ids, model_ids, data) in enumerate(test_dataloader):
             taxonomy_id = taxonomy_ids[0] if isinstance(taxonomy_ids[0], str) else taxonomy_ids[0].item()
@@ -256,14 +280,17 @@ def validate(base_model, test_dataloader, epoch, ChamferDisL1, ChamferDisL2, val
             #保存图片
             if idx % 500 == 0:
                 input_gt = gt.squeeze().detach().cpu().numpy()
-                input_gt = misc.get_ptcloud_img(input_gt)
-                im = Image.fromarray(input_gt)
+                recon = recon.squeeze().detach().cpu().numpy()
+                gt_list.append(input_gt)
+                recon_list.append(recon)
+
+                input_gt_img = misc.get_ptcloud_img(input_gt)
+                im = Image.fromarray(input_gt_img)
                 gt_savepth = os.path.join(gt_pth, '%s.jpg' % model_ids)
                 im.save(gt_savepth)
 
-                recon = recon.squeeze().detach().cpu().numpy()
-                recon = misc.get_ptcloud_img(recon)
-                im = Image.fromarray(recon)
+                recon_img = misc.get_ptcloud_img(recon)
+                im = Image.fromarray(recon_img)
                 recon_savepth = os.path.join(recon_pth, '%s.jpg' % model_ids)
                 im.save(recon_savepth)
 
@@ -319,6 +346,8 @@ def validate(base_model, test_dataloader, epoch, ChamferDisL1, ChamferDisL2, val
                             (idx + 1, n_samples, taxonomy_id, model_id, ['%.4f' % l for l in test_losses.val()], 
                             ['%.4f' % m for m in _metrics]), logger=logger)
 
+        wandb.log({'test_gt': [wandb.Object3D(i) for i in gt_list],
+                    'test_recon': [wandb.Object3D(i) for i in recon_list]})
         #遍历字典
         for _,v in category_metrics.items():
             test_metrics.update(v.avg())

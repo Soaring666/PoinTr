@@ -1,146 +1,264 @@
+import os
+os.environ["CUDA_VISIBLE_DEVICES"] = '1'
+
 import torch
 import torch.nn as nn
 
+''' 
+This script does conditional image generation on MNIST, using a diffusion model
+
+This code is modified from,
+https://github.com/cloneofsimo/minDiffusion
+
+Diffusion model is based on DDPM,
+https://arxiv.org/abs/2006.11239
+
+The conditioning idea is taken from 'Classifier-Free Diffusion Guidance',
+https://arxiv.org/abs/2207.12598
+
+This technique also features in ImageGen 'Photorealistic Text-to-Image Diffusion Modelswith Deep Language Understanding',
+https://arxiv.org/abs/2205.11487
+
+'''
+from diffusion_utils import UNet
+from typing import Dict, Tuple
+from tqdm import tqdm
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+from torch.utils.data import DataLoader
+from torchvision import models, transforms
+from torchvision.datasets import MNIST
+from torchvision.utils import save_image, make_grid
+import matplotlib.pyplot as plt
+from matplotlib.animation import FuncAnimation, PillowWriter
+import numpy as np
+import wandb
+
+
+def ddpm_schedules(beta1, beta2, T):
+    """
+    Returns pre-computed schedules for DDPM sampling, training process.
+    """
+    assert beta1 < beta2 < 1.0, "beta1 and beta2 must be in (0, 1)"
+
+    beta_t = (beta2 - beta1) * torch.arange(0, T + 1, dtype=torch.float32) / T + beta1 #average beta (n_T,)
+    sqrt_beta_t = torch.sqrt(beta_t)
+    alpha_t = 1 - beta_t
+    log_alpha_t = torch.log(alpha_t) #log函数使得后面的alpha乘法变成加法
+    bar_alpha = torch.cumsum(log_alpha_t, dim=0).exp()
+
+    sqrt_bar_alpha = torch.sqrt(bar_alpha)
+    one_over_sqrta = 1 / torch.sqrt(alpha_t)
+
+    sqrt_one_minus_bar_alpha = torch.sqrt(1 - bar_alpha)
+    oma_over_somba = (1 - alpha_t) / sqrt_one_minus_bar_alpha 
+
+    return {
+        "alpha_t": alpha_t,  # \alpha_t
+        "one_over_sqrta": one_over_sqrta,  # 1/\sqrt{\alpha_t}
+        "sqrt_beta_t": sqrt_beta_t,  # \sqrt{\beta_t}
+        "bar_alpha": bar_alpha,  # \bar{\alpha_t}
+        "sqrt_bar_alpha": sqrt_bar_alpha,  # \sqrt{\bar{\alpha_t}}
+        "sqrt_omba": sqrt_one_minus_bar_alpha,  # \sqrt{1-\bar{\alpha_t}}
+        "oma_over_somba": oma_over_somba,  # (1-\alpha_t)/\sqrt{1-\bar{\alpha_t}}
+    }
+
+
+class DDPM(nn.Module):
+    def __init__(self, nn_model, betas, n_T, device, drop_prob=0.1):
+        super(DDPM, self).__init__()
+        self.nn_model = nn_model
+
+        # register_buffer allows accessing dictionary produced by ddpm_schedules
+        # e.g. can access self.sqrtab later
+        for k, v in ddpm_schedules(betas[0], betas[1], n_T).items():
+            self.register_buffer(k, v)
+
+        self.n_T = n_T
+        self.device = device
+        self.drop_prob = drop_prob
+        self.loss_mse = nn.MSELoss()
+
+    def forward(self, x, condition):
+        """
+        this method is used in training, so samples t and noise randomly
+        input:
+            x: (B, 288, 32)
+            condition: (B, 288)  残缺点云经过编码后的向量(以后可以加入点云标签)
+        """
+        B, C, N = x.shape
+
+        _ts = torch.randint(1, self.n_T, (x.shape[0],)).to(self.device)  # t ~ Uniform(0, n_T)  (B,)
+        noise = torch.randn_like(x)  # eps ~ N(0, 1)
+
+        x_t = (
+            self.sqrt_bar_alpha[_ts, None, None] * x
+            + self.sqrt_omba[_ts, None, None] * noise
+        )  # This is the x_t, which is sqrt(alphabar) x_0 + sqrt(1-alphabar) * eps
+        # We should predict the "error term" from this x_t. Loss is what we return.
+
+        # dropout context with some probability
+        con_mask = torch.bernoulli(torch.zeros(B)+self.drop_prob).to(self.device)
+        t = torch.randint(1000, (B,)).to(self.device)
+        
+        # return MSE between added noise, and our predicted noise
+        return self.loss_mse(noise, self.nn_model(x_t, t, condition, con_mask))
+
+    def sample(self, condition, x, device, guide_w = 0.0):
+        '''
+        x: B, 576, 64   (B, C, N), N表示中心点数量
+        condition: B, 576
+        '''
+
+        B, C, N = x.shape
+
+        x_i = torch.randn(x.shape).to(device)  # x_T ~ N(0, 1), sample initial noise
+        c_i = condition.to(device) # context for us just cycles throught the mnist labels
+
+        # don't drop context at test time
+        con_mask = torch.zeros(B).to(device)     #取0是掩码
+        con_mask = torch.ones(B) - con_mask
+
+        # double the batch
+        c_i = c_i.repeat(2, 1 ,1)
+        con_mask = con_mask.repeat(2, 1 ,1)
+        con_mask[B:] = 0. # makes second half of batch condition free
+
+        x_i_store = [] # keep track of generated steps in case want to plot something 
+        print()
+        for i in range(self.n_T, 0, -1):
+            print(f'sampling timestep {i}',end='\r')
+            t_is = torch.tensor([i]).to(device)
+            t_is = t_is.repeat(B,1,1)
+
+            # double batch
+            x_i = x_i.repeat(2,1,1)
+            t_is = t_is.repeat(2,1,1)
+
+            z = torch.randn(x.shape).to(device) if i > 1 else 0
+
+            # split predictions and compute weighting
+            eps = self.nn_model(x_i, c_i, t_is, con_mask)
+            eps1 = eps[:B]
+            eps2 = eps[B:]
+            eps = (1+guide_w)*eps1 - guide_w*eps2
+            x_i = x_i[:B]
+            x_i = (
+                self.one_over_sqrta[i] * (x_i - eps * self.oma_over_somba[i])
+                + self.sqrt_beta_t[i] * z
+            )
+            if i%20==0 or i==self.n_T or i<8:
+                x_i_store.append(x_i.detach().cpu().numpy())
+        
+        x_i_store = np.array(x_i_store)
+        return x_i, x_i_store
+
+
+def train_mnist():
+    device = 'cuda'
+
+    # hardcoding these here
+    n_epoch = 20
+    batch_size = 4
+    n_T = 1000 # 500
+    n_classes = 10
+    n_feat = 128 # 128 ok, 256 better (but slower)
+    lrate = 1e-4
+    save_model = False
+    save_dir = './data/diffusion_outputs10/'
+    ws_test = [0.0, 0.5, 2.0] # strength of generative guidance
+    
+
+    unet = UNet(
+        T=1000, ch=576, ch_mult=[1, 2, 2, 2], attn=[2],
+        num_res_blocks=2, dropout=0.1).to(device)
+    ddpm = DDPM(nn_model=unet, betas=(1e-4, 0.02), n_T=n_T, device=device, drop_prob=0.1)
+    ddpm = ddpm.to(device)
+    x = torch.randn(batch_size, 576, 64).to(device)        #B, C, N  N表示encoder之后的中心点数量，C表示中心点的特征维度
+    condition = torch.randn(batch_size, 2304).to(device)
+    loss = ddpm(x, condition)
+    print(loss)
+
+    # optionally load a model
+    # ddpm.load_state_dict(torch.load("./data/diffusion_outputs/ddpm_unet01_mnist_9.pth"))
+
+
+    optim = torch.optim.Adam(ddpm.parameters(), lr=lrate)
+
+    # for ep in range(n_epoch):
+    #     print(f'epoch {ep}')
+    #     ddpm.train()
+
+    #     # linear lrate decay
+    #     optim.param_groups[0]['lr'] = lrate*(1-ep/n_epoch)
+
+    #     pbar = tqdm(dataloader)
+    #     loss_ema = None
+    #     wandb.init(project="conditional mnist diffusion")
+    #     for x, c in pbar:
+    #         optim.zero_grad()
+    #         x = x.to(device) #(256, 1, 28, 28)
+    #         c = c.to(device)
+    #         loss = ddpm(x, c)
+    #         loss.backward()
+    #         if loss_ema is None:
+    #             loss_ema = loss.item()
+    #         else:
+    #             loss_ema = 0.95 * loss_ema + 0.05 * loss.item()
+    #         wandb.log({'loss': loss_ema, 'epoch': ep})
+    #         pbar.set_description(f"loss: {loss_ema:.4f}")
+    #         optim.step()
+        
+    #     # for eval, save an image of currently generated samples (top rows)
+    #     # followed by real images (bottom rows)
+    #     ddpm.eval()
+    #     with torch.no_grad():
+    #         n_sample = 4*n_classes
+    #         for w_i, w in enumerate(ws_test):
+    #             x_gen, x_gen_store = ddpm.sample(n_sample, (1, 28, 28), device, guide_w=w)
+
+    #             # append some real images at bottom, order by class also
+    #             x_real = torch.Tensor(x_gen.shape).to(device)
+    #             for k in range(n_classes):
+    #                 for j in range(int(n_sample/n_classes)):
+    #                     try: 
+    #                         idx = torch.squeeze((c == k).nonzero())[j]
+    #                     except:
+    #                         idx = 0
+    #                     x_real[k+(j*n_classes)] = x[idx]
+
+    #             x_all = torch.cat([x_gen, x_real])
+    #             grid = make_grid(x_all*-1 + 1, nrow=10)
+    #             save_image(grid, save_dir + f"image_ep{ep}_w{w}.png")
+    #             print('saved image at ' + save_dir + f"image_ep{ep}_w{w}.png")
+
+    #             if ep%5==0 or ep == int(n_epoch-1):
+    #                 # create gif of images evolving over time, based on x_gen_store
+    #                 fig, axs = plt.subplots(nrows=int(n_sample/n_classes), ncols=n_classes,sharex=True,sharey=True,figsize=(8,3))
+    #                 def animate_diff(i, x_gen_store):
+    #                     print(f'gif animating frame {i} of {x_gen_store.shape[0]}', end='\r')
+    #                     plots = []
+    #                     for row in range(int(n_sample/n_classes)):
+    #                         for col in range(n_classes):
+    #                             axs[row, col].clear()
+    #                             axs[row, col].set_xticks([])
+    #                             axs[row, col].set_yticks([])
+    #                             # plots.append(axs[row, col].imshow(x_gen_store[i,(row*n_classes)+col,0],cmap='gray'))
+    #                             plots.append(axs[row, col].imshow(-x_gen_store[i,(row*n_classes)+col,0],cmap='gray',vmin=(-x_gen_store[i]).min(), vmax=(-x_gen_store[i]).max()))
+    #                     return plots
+    #                 ani = FuncAnimation(fig, animate_diff, fargs=[x_gen_store],  interval=200, blit=False, repeat=True, frames=x_gen_store.shape[0])    
+    #                 ani.save(save_dir + f"gif_ep{ep}_w{w}.gif", dpi=100, writer=PillowWriter(fps=5))
+    #                 print('saved image at ' + save_dir + f"gif_ep{ep}_w{w}.gif")
+    #     # optionally save model
+    #     if save_model and ep == int(n_epoch-1):
+    #         torch.save(ddpm.state_dict(), save_dir + f"model_{ep}.pth")
+    #         print('saved model at ' + save_dir + f"model_{ep}.pth")
+
+if __name__ == "__main__":
+    train_mnist()
 
 
 
 
 
-class PCTransformer(nn.Module):
-    def __init__(self, config):
-        super().__init__()
-        encoder_config = config.encoder_config
-        decoder_config = config.decoder_config
-        self.center_num  = getattr(config, 'center_num', [512, 128])
-        self.encoder_type = config.encoder_type
-        assert self.encoder_type in ['graph', 'pn'], f'unexpected encoder_type {self.encoder_type}'
-
-        in_chans = 3
-        self.num_query = query_num = config.num_query
-        global_feature_dim = config.global_feature_dim
-
-        print_log(f'Transformer with config {config}', logger='MODEL')
-        # base encoder
-        if self.encoder_type == 'graph':
-            self.grouper = DGCNN_Grouper(k = 16)
-        else:
-            self.grouper = SimpleEncoder(k = 32, embed_dims=512)
-        self.pos_embed = nn.Sequential(
-            nn.Linear(in_chans, 128),
-            nn.GELU(),
-            nn.Linear(128, encoder_config.embed_dim)
-        )  
-        self.input_proj = nn.Sequential(
-            nn.Linear(self.grouper.num_features, 512),
-            nn.GELU(),
-            nn.Linear(512, encoder_config.embed_dim)
-        )
-        # Coarse Level 1 : Encoder
-        self.encoder = PointTransformerEncoderEntry(encoder_config)
-
-        self.increase_dim = nn.Sequential(
-            nn.Linear(encoder_config.embed_dim, 1024),
-            nn.GELU(),
-            nn.Linear(1024, global_feature_dim))
-        # query generator
-        self.coarse_pred = nn.Sequential(
-            nn.Linear(global_feature_dim, 1024),
-            nn.GELU(),
-            nn.Linear(1024, 3 * query_num)
-        )
-        #线性层相当于只对每个点的维度进行加权和
-        self.mlp_query = nn.Sequential(
-            nn.Linear(global_feature_dim + 3, 1024),
-            nn.GELU(),
-            nn.Linear(1024, 1024),
-            nn.GELU(),
-            nn.Linear(1024, decoder_config.embed_dim)
-        )
-        # assert decoder_config.embed_dim == encoder_config.embed_dim
-        if decoder_config.embed_dim == encoder_config.embed_dim:
-            self.mem_link = nn.Identity()
-        else:
-            self.mem_link = nn.Linear(encoder_config.embed_dim, decoder_config.embed_dim)
-        # Coarse Level 2 : Decoder
-        self.decoder = PointTransformerDecoderEntry(decoder_config)
- 
-        self.query_ranking = nn.Sequential(
-            nn.Linear(3, 256),
-            nn.GELU(),
-            nn.Linear(256, 256),
-            nn.GELU(),
-            nn.Linear(256, 1),
-            nn.Sigmoid()
-        )
-
-        self.apply(self._init_weights)
-
-    def _init_weights(self, m):
-        if isinstance(m, nn.Linear):
-            trunc_normal_(m.weight, std=.02)
-            if isinstance(m, nn.Linear) and m.bias is not None:
-                nn.init.constant_(m.bias, 0)
-        elif isinstance(m, nn.LayerNorm):
-            nn.init.constant_(m.bias, 0)
-            nn.init.constant_(m.weight, 1.0)
-
-    def forward(self, xyz):
-        bs = xyz.size(0)
-        coor, f = self.grouper(xyz, self.center_num) # b n c (B, 256, 3)/(B, 256, 128)
-        pe =  self.pos_embed(coor)  #(B, 256, 384)
-        x = self.input_proj(f)      #(B, 256, 384)
-
-        #use self-attention to encoder, and loop 6 epoch
-        x = self.encoder(x + pe, coor) # b n c  (B, 256, 384)
-        global_feature = self.increase_dim(x) # B N 1024
-        global_feature = torch.max(global_feature, dim=1)[0] # B 1024
-
-        #这是预测出来的点
-        coarse = self.coarse_pred(global_feature).reshape(bs, -1, 3)    #(B, 512, 3)
-
-        #这是原始点云的fps采样
-        coarse_inp = misc.fps(xyz, self.num_query//2) # B 256 3
-        #cat the fps of origin with predicted points
-        coarse = torch.cat([coarse, coarse_inp], dim=1) # B 256+512 3
-
-        mem = self.mem_link(x)      #(B, 256, 384)
-
-        #transe pos dim to 1 for the coarse points
-        query_ranking = self.query_ranking(coarse) # b 768 1
-        #return the rank idx of coarse points
-        idx = torch.argsort(query_ranking, dim=1, descending=True) # b 768 1
-        #downsample the coarse points from 768 points to 512 points
-        coarse = torch.gather(coarse, 1, idx[:,:self.num_query].expand(-1, -1, coarse.size(-1)))    #(B, 512, 3)
-
-        if self.training:
-            #在线过程中给训练集添加噪声
-            # add denoise task
-            # first pick some point : 64?
-            picked_points = misc.fps(xyz, 64)
-            picked_points = misc.jitter_points(picked_points)
-            coarse = torch.cat([coarse, picked_points], dim=1) # B 576 3
-            denoise_length = 64     
-
-            # produce query
-            q = self.mlp_query(
-            torch.cat([
-                global_feature.unsqueeze(1).expand(-1, coarse.size(1), -1),
-                coarse], dim = -1)) # b 576 384
-
-            # forward decoder
-            #q为动态的query，v为对输入特征的编码
-            q = self.decoder(q=q, v=mem, q_pos=coarse, v_pos=coor, denoise_length=denoise_length)
-
-            return q, coarse, denoise_length
-
-        else:
-            # produce query
-            q = self.mlp_query(
-            torch.cat([
-                global_feature.unsqueeze(1).expand(-1, coarse.size(1), -1),
-                coarse], dim = -1)) # b n c
-            
-            # forward decoder
-            q = self.decoder(q=q, v=mem, q_pos=coarse, v_pos=coor)
-
-            return q, coarse, 0
