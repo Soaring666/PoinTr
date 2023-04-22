@@ -22,7 +22,7 @@ dataset : {
             
 model : {
   NAME: FoldingNet, num_pred: 16384, encoder_channel: 1024}
-total_bs : 20  
+total_bs : 30  
 step_per_update : 1
 max_epoch : 150
 

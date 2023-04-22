@@ -31,23 +31,23 @@ class FoldingNet_AE(nn.Module):
         '''
 
         self.folding1 = nn.Sequential(
-            nn.Conv1d(self.encoder_channel + 2, 256, 1),
-            nn.BatchNorm1d(256),
+            nn.Conv1d(self.encoder_channel + 2, 1024, 1),
+            nn.BatchNorm1d(1024),
             nn.ReLU(inplace=True),
-            nn.Conv1d(256, 256, 1),
-            nn.BatchNorm1d(256),
+            nn.Conv1d(1024, 512, 1),
+            nn.BatchNorm1d(512),
             nn.ReLU(inplace=True),
-            nn.Conv1d(256, 3, 1),
+            nn.Conv1d(512, 3, 1),
         )
 
         self.folding2 = nn.Sequential(
-            nn.Conv1d(self.encoder_channel + 3, 256, 1),
-            nn.BatchNorm1d(256),
+            nn.Conv1d(self.encoder_channel + 3, 1024, 1),
+            nn.BatchNorm1d(1024),
             nn.ReLU(inplace=True),
-            nn.Conv1d(256, 256, 1),
-            nn.BatchNorm1d(256),
+            nn.Conv1d(1024, 512, 1),
+            nn.BatchNorm1d(512),
             nn.ReLU(inplace=True),
-            nn.Conv1d(256, 3, 1),
+            nn.Conv1d(512, 3, 1),
         )
 
         a = torch.linspace(-0.5, 0.5, steps=self.grid_size, dtype=torch.float).view(1, self.grid_size).expand(self.grid_size, self.grid_size).reshape(1, -1)

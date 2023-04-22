@@ -201,8 +201,9 @@ def run_net(args, config, train_writer=None, val_writer=None):
                 if n_itr < config.scheduler.kwargs_2.total_epoch:
                     scheduler.step()
             
-        wandb.log({'train_gt': [wandb.Object3D(i) for i in train_gt_list],
-                    'train_recon': [wandb.Object3D(i) for i in train_recon_list]})
+        if epoch % 20 == 0:
+            wandb.log({'train_gt': [wandb.Object3D(i) for i in train_gt_list],
+                        'train_recon': [wandb.Object3D(i) for i in train_recon_list]})
         wandb.log({"Loss/Epoch/dense": train_CDL2_loss.avg() * 1000})
 
         if isinstance(scheduler, list):
