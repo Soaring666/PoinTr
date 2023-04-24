@@ -472,7 +472,9 @@ def get_nearest_index(target, source, k=1, return_dis=False):
         target: (bs, 3, v1)
         source: (bs, 3, v2)
     Return:
-        nearest_index: (bs, v1, 1)
+        返回值是source的索引,即表示在对于target的每个点,在source中最近邻的k个点索引
+        nearest_dis: (bs, v1, k)
+        nearest_index: (bs, v1, k)
     """
     inner = torch.bmm(target.transpose(1, 2), source)  # (bs, v1, v2)
     s_norm_2 = torch.sum(source**2, dim=1)  # (bs, v2)

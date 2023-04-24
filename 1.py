@@ -18,16 +18,17 @@ from PIL import Image
 
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
-batch_size = 8
-mask_drop = 0.1
-con_mask = torch.bernoulli(torch.zeros(batch_size)+mask_drop)
-con_mask = torch.ones(batch_size) - con_mask
-print(con_mask)
+a = torch.randn(1, 10, 3)
 
-
-
-
-
+# non_zeros1 = torch.sum(a, dim=2)
+# non_zeros1 = torch.sum(a, dim=2).ne(0)
+a = torch.randn(1, 3, 4)
+# b = torch.tensor([[True, False, True]])
+b = torch.tensor([[0, 0, 0]])
+print(b.shape)
+c = a[b]
+print("a:", a, "c:", c)
+# print(non_zeros1)
 
 
 

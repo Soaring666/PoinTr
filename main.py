@@ -3,6 +3,8 @@ os.environ["CUDA_VISIBLE_DEVICES"] = '0'
 
 from tools import run_net
 from tools import test_net
+from tools import seed_runner
+from tools import seed_runner_AE
 from utils import parser, dist_utils, misc
 from utils.logger import *
 from utils.config import *
@@ -56,7 +58,7 @@ def main():
     if args.seed is not None:
         logger.info(f'Set random seed to {args.seed}, '
                     f'deterministic: {args.deterministic}')
-        #可以把cudnn.benchmark设为True加快速度
+        #可以把cudnn.benchmark设为True加快速度，但会出现更多的随机性
         misc.set_random_seed(args.seed + args.local_rank, deterministic=args.deterministic) # seed + rank, for augmentation
     if args.distributed:
         assert args.local_rank == torch.distributed.get_rank() 
@@ -65,7 +67,7 @@ def main():
     if args.test:
         test_net(args, config)
     else:
-        run_net(args, config, train_writer, val_writer)
+        seed_runner.run_net(args, config, train_writer, val_writer)
 
 
 if __name__ == '__main__':

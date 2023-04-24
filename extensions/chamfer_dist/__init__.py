@@ -14,6 +14,8 @@ class ChamferFunction(torch.autograd.Function):
     @staticmethod
     def forward(ctx, xyz1, xyz2):
         dist1, dist2, idx1, idx2 = chamfer.forward(xyz1, xyz2)
+        dist1 = torch.clamp(dist1, min=1e-9)
+        dist2 = torch.clamp(dist2, min=1e-9)
         ctx.save_for_backward(xyz1, xyz2, idx1, idx2)
 
         return dist1, dist2

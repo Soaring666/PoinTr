@@ -252,7 +252,7 @@ class UpLayer(nn.Module):
 
 
 @MODELS.register_module()
-class SeedFormer(nn.Module):
+class SeedFormer_AE(nn.Module):
     """
     SeedFormer Point Cloud Completion with Patch Seeds and Upsample Transformer
     """
@@ -269,7 +269,7 @@ class SeedFormer(nn.Module):
             interpolate: interpolate seed features (nearest/three)
             attn_channel: transformer self-attention dimension (channel/point)
         """
-        super(SeedFormer, self).__init__()
+        super(SeedFormer_AE, self).__init__()
         self.num_p0 = config.num_p0
 
         # Seed Generator
@@ -285,7 +285,7 @@ class SeedFormer(nn.Module):
                                      interpolate=config.interpolate, attn_channel=config.attn_channel))
         self.up_layers = nn.ModuleList(up_layers)
 
-    def forward(self, partial_cloud):
+    def forward(self, partial_cloud, gt):
         """
         Args:
             partial_cloud: (B, N, 3)
@@ -297,10 +297,10 @@ class SeedFormer(nn.Module):
             pcd_3 (B, 16384, 3)]
         """
         # Encoder
-        feat, patch_xyz, patch_feat = self.forward_encoder(partial_cloud)
+        seed, seed_feat, pred_pcds = self.forward_encoder(partial_cloud)
 
         # Decoder
-        pred_pcds = self.forward_decoder(feat, partial_cloud, patch_xyz, patch_feat)
+        pred_pcds = self.forward_decoder(gt, seed, seed_feat, pred_pcds)
 
         return pred_pcds
 
@@ -309,16 +309,6 @@ class SeedFormer(nn.Module):
         partial_cloud = partial_cloud.permute(0, 2, 1).contiguous()     #(B, 3, 2048)
         feat, patch_xyz, patch_feat = self.feat_extractor(partial_cloud) # (B, feat_dim, 1)
 
-        return feat, patch_xyz, patch_feat
-
-    def forward_decoder(self, feat, partial_cloud, patch_xyz, patch_feat):
-        """
-        Args:
-            feat: Tensor, (B, feat_dim, 1)
-            partial_cloud: Tensor, (B, N, 3)
-            patch_xyz: (B, 3, 128)
-            patch_feat: (B, seed_dim, 128)
-        """
         pred_pcds = []
 
         # Generate Seeds
@@ -326,10 +316,25 @@ class SeedFormer(nn.Module):
         seed = seed.permute(0, 2, 1).contiguous() # (B, num_pc, 3)
         pred_pcds.append(seed)
 
+
+        return seed, seed_feat, pred_pcds
+
+    def forward_decoder(self, gt, seed, seed_feat, pred_pcds):
+        """
+        Args:
+            feat: Tensor, (B, feat_dim, 1)
+            partial_cloud: Tensor, (B, N, 3)
+            patch_xyz: (B, 3, 128)
+            patch_feat: (B, seed_dim, 128)
+        """
+        #get gt fps
+        gt_2 = fps_subsample(gt, 2048)
+        gt_1 = fps_subsample(gt_2, 512)
+        gt_c = fps_subsample(gt_1, 256)
+        
         # Upsample layers
-        pcd = fps_subsample(torch.cat([seed, partial_cloud], 1), self.num_p0) # (B, num_p0, 3)
         K_prev = None
-        pcd = pcd.permute(0, 2, 1).contiguous() # (B, 3, num_p0)
+        pcd = gt_1.permute(0, 2, 1).contiguous() # (B, 3, 512)
         seed = seed.permute(0, 2, 1).contiguous() # (B, 3, 256)
         for layer in self.up_layers:
             pcd, K_prev = layer(pcd, seed, seed_feat, K_prev)
