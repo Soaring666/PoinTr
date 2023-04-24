@@ -67,7 +67,7 @@ def main():
     if args.test:
         test_net(args, config)
     else:
-        seed_runner.run_net(args, config, train_writer, val_writer)
+        seed_runner_AE.run_net(args, config, train_writer, val_writer)
 
 
 if __name__ == '__main__':
