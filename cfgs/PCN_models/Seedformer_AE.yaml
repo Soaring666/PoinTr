@@ -1,7 +1,7 @@
 optimizer : {
   type: Adam,
   kwargs: {
-  lr : 0.0005,
+  lr : 0.0001,
   weight_decay : 0.,
   betas: [0.9, 0.999]
 }}
@@ -13,7 +13,7 @@ scheduler: {
 }}
 GradualWarmupScheduler: {
   multiplier: 1,
-  total_epoch: 50
+  total_epoch: 20
 }
 
 dataset : {
@@ -36,7 +36,7 @@ model : {
   interpolate: three,
   attn_channel: True}
 
-total_bs : 20
+total_bs : 40
 step_per_update : 1
 max_epoch : 150
 

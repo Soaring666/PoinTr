@@ -1,38 +1,59 @@
 import torch
+# import os
+# import numpy as np
+# import wandb
+# import open3d as o3d
+# import torch.nn as nn
+# import PIL
+# from torch.nn import functional as F
+# from easydict import EasyDict
+# from tqdm import tqdm
+# from utils import parser, dist_utils, misc
+# from utils.config import *
+# from my_datasets.my_PCN import PCN
+# from utils.misc import *
+# from tools import builder
+# from PIL import Image
 import os
-import numpy as np
+import torch
+import torch.multiprocessing as mp
+import argparse
 import wandb
-import open3d as o3d
-import torch.nn as nn
-import PIL
-from torch.nn import functional as F
-from easydict import EasyDict
-from tqdm import tqdm
-from utils import parser, dist_utils, misc
-from utils.config import *
-from my_datasets.my_PCN import PCN
-from utils.misc import *
-from tools import builder
-from PIL import Image
+from torch import distributed as dist
 
 
-device = 'cuda' if torch.cuda.is_available() else 'cpu'
+# device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
-a = torch.randn(1, 10, 3)
+#distributed initialization
+parser = argparse.ArgumentParser()
+parser.add_argument('--local_rank', type=int, default=0)
+args = parser.parse_args()
 
-# non_zeros1 = torch.sum(a, dim=2)
-# non_zeros1 = torch.sum(a, dim=2).ne(0)
-a = torch.randn(1, 3, 4)
-# b = torch.tensor([[True, False, True]])
-b = torch.tensor([[0, 0, 0]])
-print(b.shape)
-c = a[b]
-print("a:", a, "c:", c)
-# print(non_zeros1)
+if args.local_rank == 0:
+    run = wandb.init(project='test_dist') 
 
+# rank = int(os.environ['RANK'])
+# num_gpus = torch.cuda.device_count()
+# torch.cuda.set_device(rank % num_gpus)
+# dist.init_process_group(backend='nccl', init_method='env://', rank=0, world_size=2)
+# # a = torch.randn(3,4).cuda()
+# print(a.device)
+# print("rank: ", dist.get_rank())
+device = torch.device('cuda', args.local_rank)
+print("local_rank:", args.local_rank)
+# b = torch.randn(3,4).cuda()
+# print('b:', b.device)
+# a = torch.randn(3,4).to(device)
+# print(a.device)
+##################测试多卡跑代码在wandb上track的情况#########
+a = [1, 5, 10, 3]
+if args.local_rank == 0:
+    for i in range(len(a)):
+        run.log({'a': a[i]})
 
-
-
+                # if args.distributed:
+                #     if args.local_rank == 0:
+                # else:
 
 
 

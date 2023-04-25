@@ -20,8 +20,8 @@ from warmup_scheduler import GradualWarmupScheduler
 
 def run_net(args, config, train_writer=None, val_writer=None):
 
-    wandb.login()
-    run = wandb.init(project='seedformer_AE')
+    if args.local_rank == 0:
+        run = wandb.init(project='seedformer_AE')
 
     logger = get_logger(args.log_name)
     # build dataset
@@ -139,6 +139,10 @@ def run_net(args, config, train_writer=None, val_writer=None):
             train_loss_sum.update(loss_sum)
             train_loss_list.update(loss_list)
             loss_sum.backward()
+
+            if args.distributed:
+                dist.barrier()
+
             # wandb.log({"train_loss_sum": train_loss_sum.item() * 1000,
             #            "train_loss_cdc": dense_loss.item() * 1000})
 
@@ -147,8 +151,9 @@ def run_net(args, config, train_writer=None, val_writer=None):
                 print("save train point cloud")
                 train_gt_list = [gt_fps_list[i][0].squeeze().detach().cpu().numpy() for i in range(4)]
                 train_recon_list = [ret[i][0].squeeze().detach().cpu().numpy() for i in range(4)]  
-                wandb.log({'train_gt': [wandb.Object3D(i) for i in train_gt_list],
-                        'train_recon': [wandb.Object3D(i) for i in train_recon_list]})
+                if args.local_rank == 0:
+                    wandb.log({'train_gt': [wandb.Object3D(i) for i in train_gt_list],
+                            'train_recon': [wandb.Object3D(i) for i in train_recon_list]})
 
             '''
             pointr损失
@@ -168,6 +173,13 @@ def run_net(args, config, train_writer=None, val_writer=None):
                 num_iter = 0
                 optimizer.step()
                 base_model.zero_grad()
+            
+            # if args.distributed:
+            #     sparse_loss = dist_utils.reduce_tensor(sparse_loss, args)
+            #     dense_loss = dist_utils.reduce_tensor(dense_loss, args)
+            #     losses.update([sparse_loss.item() * 1000, dense_loss.item() * 1000])
+            # else:
+            #     losses.update([sparse_loss.item() * 1000, dense_loss.item() * 1000])
 
             if args.distributed:
                 torch.cuda.synchronize()
@@ -183,12 +195,13 @@ def run_net(args, config, train_writer=None, val_writer=None):
             # break
 
             
-        wandb.log({"train_loss_sum": train_loss_sum.avg() * 1000, 
-                   "train_loss_cdc": train_loss_list.avg(0) * 1000,
-                   "train_loss_cd1": train_loss_list.avg(1) * 1000,
-                   "train_loss_cd2": train_loss_list.avg(2) * 1000,
-                   "train_loss_cd3": train_loss_list.avg(3) * 1000,
-                   "train_loss_partial_matching": train_loss_list.avg(4) * 1000,})
+        if args.local_rank == 0:
+            wandb.log({"train_loss_sum": train_loss_sum.avg() * 1000, 
+                    "train_loss_cdc": train_loss_list.avg(0) * 1000,
+                    "train_loss_cd1": train_loss_list.avg(1) * 1000,
+                    "train_loss_cd2": train_loss_list.avg(2) * 1000,
+                    "train_loss_cd3": train_loss_list.avg(3) * 1000,
+                    "train_loss_partial_matching": train_loss_list.avg(4) * 1000,})
 
 
 
@@ -269,8 +282,9 @@ def validate(base_model, test_dataloader, epoch, ChamferDisL1, ChamferDisL2, val
 
                 test_gt_list = [gt_fps_list[i].squeeze().detach().cpu().numpy() for i in range(4)]
                 test_recon_list = [ret[i].squeeze().detach().cpu().numpy() for i in range(4)]  
-                wandb.log({'test_gt': [wandb.Object3D(i) for i in test_gt_list],
-                    'test_recon': [wandb.Object3D(i) for i in test_recon_list]})
+                if args.local_rank == 0:
+                    wandb.log({'test_gt': [wandb.Object3D(i) for i in test_gt_list],
+                        'test_recon': [wandb.Object3D(i) for i in test_recon_list]})
 
                 input_gt = gt.squeeze().detach().cpu().numpy()
                 recon = recon.squeeze().detach().cpu().numpy()
@@ -340,8 +354,9 @@ def validate(base_model, test_dataloader, epoch, ChamferDisL1, ChamferDisL2, val
     print_log(msg, logger=logger)
 
     #使用wandb track重建的总loss和cdl1
-    wandb.log({'test_loss_sum': test_loss_sum.avg()*1000, 
-               'test_CDL1': test_metrics.avg()[1]})
+    if args.local_rank == 0:
+        wandb.log({'test_loss_sum': test_loss_sum.avg()*1000, 
+                'test_CDL1': test_metrics.avg()[1]})
 
     columns = ['Taxonomy', 'ClassName', 'nsamples', 'F1_Score', 'CDL1', 'CDL2', 'EMD']
     data = []
@@ -356,7 +371,8 @@ def validate(base_model, test_dataloader, epoch, ChamferDisL1, ChamferDisL2, val
     data.append(data_all)
 
     table = wandb.Table(data=data, columns=columns)
-    wandb.log({'test_table': table})
+    if args.local_rank == 0:
+        wandb.log({'test_table': table})
 
 
     return Metrics(config.consider_metric, test_metrics.avg())

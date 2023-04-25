@@ -1,5 +1,5 @@
 import os
-os.environ["CUDA_VISIBLE_DEVICES"] = '0'
+# os.environ["CUDA_VISIBLE_DEVICES"] = '0'
 
 from tools import run_net
 from tools import test_net
