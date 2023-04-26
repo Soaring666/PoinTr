@@ -165,7 +165,7 @@ def run_net(args, config, train_writer=None, val_writer=None):
             _loss = sparse_loss + dense_loss 
             _loss.backward()
             '''
-            # forward
+            # forward在平均损失前就进行了梯度回传并更新参数，更像是一张卡训练一个iter
             if num_iter == config.step_per_update:
                 torch.nn.utils.clip_grad_norm_(base_model.parameters(), getattr(config, 'grad_norm_clip', 10), norm_type=2)
                 num_iter = 0

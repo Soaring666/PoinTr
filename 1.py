@@ -14,25 +14,26 @@ from my_datasets.my_PCN import PCN
 from utils.misc import *
 from tools import builder
 from PIL import Image
+from torch import distributed as dist
+import torch.multiprocessing as mp
 
 
-device = 'cuda' if torch.cuda.is_available() else 'cpu'
+# device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
-a = torch.randn(1, 10, 3)
+mp.set_start_method('spawn')
 
-# non_zeros1 = torch.sum(a, dim=2)
-# non_zeros1 = torch.sum(a, dim=2).ne(0)
-a = torch.randn(1, 3, 4)
-# b = torch.tensor([[True, False, True]])
-b = torch.tensor([[0, 0, 0]])
-print(b.shape)
-c = a[b]
-print("a:", a, "c:", c)
-# print(non_zeros1)
+rank = int(os.environ['RANK'])
+print('environ: ', rank)
+num_gpus = torch.cuda.device_count()
+torch.cuda.set_device(rank % num_gpus)
+dist.init_process_group(backend='nccl')
 
+# print('environ:1 ', rank)
+# print('environ:2 ', rank)
 
-
-
+# rank = dist.get_rank()
+# world_size = dist.get_world_size()
+# print(rank, world_size)
 
 
 
