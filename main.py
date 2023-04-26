@@ -1,10 +1,8 @@
 import os
 # os.environ["CUDA_VISIBLE_DEVICES"] = '0'
 
-from tools import run_net
 from tools import test_net
-from tools import seed_runner
-from tools import seed_runner_AE
+from tools import runner_ddpm
 from utils import parser, dist_utils, misc
 from utils.logger import *
 from utils.config import *
@@ -44,10 +42,12 @@ def main():
     config = get_config(args, logger = logger)
     # batch size
     if args.distributed:
-        assert config.total_bs % world_size == 0
-        config.dataset.train.others.bs = config.total_bs // world_size
+        assert config.total_train_bs % world_size == 0
+        config.dataset.train.others.bs = config.total_train_bs // world_size
+        config.dataset.val.others.bs = config.total_val_bs // world_size
     else:
-        config.dataset.train.others.bs = config.total_bs
+        config.dataset.train.others.bs = config.total_train_bs
+        config.dataset.val.others.bs = config.total_val_bs
         
     # log 
     log_args_to_file(args, 'args', logger = logger)
@@ -67,7 +67,7 @@ def main():
     if args.test:
         test_net(args, config)
     else:
-        seed_runner_AE.run_net(args, config, train_writer, val_writer)
+        runner_ddpm.run_net(args, config, train_writer, val_writer)
 
 
 if __name__ == '__main__':

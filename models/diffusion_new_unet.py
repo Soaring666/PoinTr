@@ -84,9 +84,10 @@ class DDPM(nn.Module):
         """
         this method is used in training, so samples t and noise randomly
         input:
-            x: (B, 288, 32)
-            condition: (B, 288)  残缺点云经过编码后的向量(以后可以加入点云标签)
+            x: (B, 576, 64) ***** (B, 512, 3)
+            condition: (B, 288)  残缺点云经过编码后的向量(以后可以加入点云标签) ***** seed_feat (B, 128, 256)
         """
+        x = x.transpose(-2, -1)     #(B, 3, 512)
         B, C, N = x.shape
 
         _ts = torch.randint(1, self.n_T, (x.shape[0],)).to(self.device)  # t ~ Uniform(0, n_T)  (B,)
@@ -105,15 +106,15 @@ class DDPM(nn.Module):
         # return MSE between added noise, and our predicted noise
         return self.loss_mse(noise, self.nn_model(x_t, t, condition, con_mask))
 
-    def sample(self, condition, x, device, guide_w = 0.0):
+    def sample(self, condition, shape, device, guide_w = 0.0):
         '''
-        x: B, 576, 64   (B, C, N), N表示中心点数量
-        condition: B, 576
+        shape: B, 512, 3   (B, N, C)表示生成张量的形状
+        condition: B, 128, 256
         '''
+        B, N, C = shape
+        use_shape = [B, C, N]   #转换为输入到nn_module的形状
 
-        B, C, N = x.shape
-
-        x_i = torch.randn(x.shape).to(device)  # x_T ~ N(0, 1), sample initial noise
+        x_i = torch.randn(use_shape).to(device)  # x_T ~ N(0, 1), sample initial noise
         c_i = condition.to(device) # context for us just cycles throught the mnist labels
 
         # don't drop context at test time
@@ -122,24 +123,24 @@ class DDPM(nn.Module):
 
         # double the batch
         c_i = c_i.repeat(2, 1 ,1)
-        con_mask = con_mask.repeat(2, 1 ,1)
+        con_mask = con_mask.repeat(2)
         con_mask[B:] = 0. # makes second half of batch condition free
 
         x_i_store = [] # keep track of generated steps in case want to plot something 
         print()
-        for i in range(self.n_T, 0, -1):
+        for i in range(self.n_T - 1, 0, -1):
             print(f'sampling timestep {i}',end='\r')
-            t_is = torch.tensor([i]).to(device)
-            t_is = t_is.repeat(B,1,1)
+            t_is = torch.tensor([i], dtype=int).to(device)
+            t_is = t_is.repeat(B,)
 
             # double batch
             x_i = x_i.repeat(2,1,1)
-            t_is = t_is.repeat(2,1,1)
+            t_is = t_is.repeat(2)
 
-            z = torch.randn(x.shape).to(device) if i > 1 else 0
+            z = torch.randn(use_shape).to(device) if i > 1 else 0
 
             # split predictions and compute weighting
-            eps = self.nn_model(x_i, c_i, t_is, con_mask)
+            eps = self.nn_model(x_i, t_is, c_i, con_mask)
             eps1 = eps[:B]
             eps2 = eps[B:]
             eps = (1+guide_w)*eps1 - guide_w*eps2
@@ -255,8 +256,36 @@ def train_mnist():
     #         torch.save(ddpm.state_dict(), save_dir + f"model_{ep}.pth")
     #         print('saved model at ' + save_dir + f"model_{ep}.pth")
 
+def train_test():
+    device = 'cpu'
+
+    # hardcoding these here
+    batch_size = 1
+    n_T = 1000 # 500
+    n_feat = 128 # 128 ok, 256 better (but slower)
+    lrate = 1e-4
+    ws_test = [0.0, 0.5, 2.0] # strength of generative guidance
+    
+
+    with torch.no_grad():
+        unet = UNet(
+            T=1000, ch=128, condition_num=256, N=512,  
+            ch_mult=[1, 2, 2, 2], attn=[2], 
+            num_res_blocks=2, dropout=0.1).to(device)
+        ddpm = DDPM(nn_model=unet, betas=(1e-4, 0.02), n_T=n_T, device=device, drop_prob=0.1)
+        ddpm = ddpm.to(device)
+        x = torch.randn(batch_size, 512, 3).to(device)        #B, N, 3
+        shape = x.shape
+        condition = torch.randn(batch_size, 128, 256).to(device)
+        loss = ddpm(x, condition)
+        print(loss)
+        x_i, x_i_store_list = ddpm.sample(condition, shape, device, guide_w = 0.0)
+        print('x_i.shape:', x_i.shape)
+        print('x_i_store_list:', len(x_i_store_list))
+    
+
 if __name__ == "__main__":
-    train_mnist()
+    train_test()
 
 
 

@@ -10,3 +10,4 @@ import models.knn_foldingnet
 import models.FoldingNet_AE
 import models.seedformer
 import models.seedformer_AE
+import models.DDPM

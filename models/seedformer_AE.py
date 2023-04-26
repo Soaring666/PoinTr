@@ -319,19 +319,23 @@ class SeedFormer_AE(nn.Module):
 
         return seed, seed_feat, pred_pcds
 
-    def forward_decoder(self, gt, seed, seed_feat, pred_pcds):
+    def forward_decoder(self, gt, gt_pre, seed, seed_feat, pred_pcds):
         """
         Args:
-            feat: Tensor, (B, feat_dim, 1)
-            partial_cloud: Tensor, (B, N, 3)
-            patch_xyz: (B, 3, 128)
-            patch_feat: (B, seed_dim, 128)
+            gt: (B, 16384, 3)
+            gt_pre: (B, 512, 3)
+            seed: (B, 256, 3)
+            seed_feat: (B, 128, 256)
         """
         #get gt fps
-        gt_2 = fps_subsample(gt, 2048)
-        gt_1 = fps_subsample(gt_2, 512)
-        gt_c = fps_subsample(gt_1, 256)
-        
+        if gt is not None:
+            gt_2 = fps_subsample(gt, 2048)
+            gt_1 = fps_subsample(gt_2, 512)
+            gt_c = fps_subsample(gt_1, 256)
+        else:
+            gt_1 = gt_pre
+
+        # get current features
         # Upsample layers
         K_prev = None
         pcd = gt_1.permute(0, 2, 1).contiguous() # (B, 3, 512)

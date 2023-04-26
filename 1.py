@@ -24,6 +24,40 @@ from torch import distributed as dist
 
 # device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
+shape = [3, 4, 5]
+a = torch.randn(shape)
+B ,N, C = a.shape
+
+print(B, N, C)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+'''
+##########distributed initialization##########
 #distributed initialization
 parser = argparse.ArgumentParser()
 parser.add_argument('--local_rank', type=int, default=0)
@@ -54,15 +88,7 @@ if args.local_rank == 0:
                 # if args.distributed:
                 #     if args.local_rank == 0:
                 # else:
-
-
-
-
-
-
-
-
-
+'''
 
 
 '''

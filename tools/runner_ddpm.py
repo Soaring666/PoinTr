@@ -14,6 +14,7 @@ from utils.AverageMeter import AverageMeter
 from utils.metrics import Metrics
 from extensions.chamfer_dist import ChamferDistanceL1, ChamferDistanceL2
 from warmup_scheduler import GradualWarmupScheduler
+from models.seed_utils.utils import fps_subsample
 
 # os.environ["CUDA_VISIBLE_DEVICES"] = '1'
 # device = torch.device('cuda:1' if torch.cuda.is_available() else 'cpu')
@@ -21,7 +22,7 @@ from warmup_scheduler import GradualWarmupScheduler
 def run_net(args, config, train_writer=None, val_writer=None):
 
     if args.local_rank == 0:
-        run = wandb.init(project='seedformer_AE')
+        run = wandb.init(project='diffusion')
 
     logger = get_logger(args.log_name)
     # build dataset
@@ -29,11 +30,16 @@ def run_net(args, config, train_writer=None, val_writer=None):
                                                             builder.dataset_builder(args, config.dataset.val)
                                                     
     # build model
+    premodel = builder.model_builder(config.premodel)
     base_model = builder.model_builder(config.model)
     if args.use_gpu:
+        premodel = premodel.cuda()
         base_model = base_model.cuda()
 
-    # from IPython import embed; embed()
+    #load pretrained model
+    builder.load_model(premodel, config.premodel_ckpts, logger=logger) 
+    for param in premodel.parameters():
+        param.requires_grad = False
     
     # parameter setting
     start_epoch = 0
@@ -73,7 +79,6 @@ def run_net(args, config, train_writer=None, val_writer=None):
     else:
         print_log('Using Data parallel ...' , logger = logger)
         base_model = nn.DataParallel(base_model).cuda()
-        base_model = base_model.cuda()
     # optimizer & scheduler
     optimizer, scheduler = builder.build_opti_sche(base_model, config)
     if config.GradualWarmupScheduler is not None:
@@ -101,16 +106,13 @@ def run_net(args, config, train_writer=None, val_writer=None):
         batch_start_time = time.time()
         batch_time = AverageMeter()
         data_time = AverageMeter()
-        train_loss_list = AverageMeter(['cdc', 'cd1', 'cd2', 'cd3', 'partial_matching'])
-        train_loss_sum = AverageMeter()
+        train_loss = AverageMeter()
 
         num_iter = 0
 
         base_model.train()  # set model to training mode
         n_batches = len(train_dataloader)
 
-        train_gt_list = []
-        train_recon_list = []
         for idx, (taxonomy_ids, model_ids, data) in enumerate(tqdm(train_dataloader)):
             data_time.update(time.time() - batch_start_time)
             npoints = config.dataset.train._base_.N_POINTS
@@ -130,57 +132,31 @@ def run_net(args, config, train_writer=None, val_writer=None):
                 partial = partial.cuda()
             else:
                 raise NotImplementedError(f'Train phase do not support {dataset_name}')
+            torch.cuda.empty_cache()
 
             num_iter += 1
+            seed, seed_feat, pred_pcds = premodel.forward_encoder(partial)           
+            gt_2 = fps_subsample(gt, 2048)
+            gt_1 = fps_subsample(gt_2, 512)
+            B, N, C = gt_1.shape
+            dif_shape = [config.dataset.val.others.bs, N, C]
+
+            mseloss = base_model(gt_1, seed_feat)
             
-            ret = base_model(partial, gt)    
-            
-            loss_sum, loss_list, gt_fps_list = base_model.module.get_loss(recon=ret, partial=partial, gt=gt)
-            train_loss_sum.update(loss_sum)
-            train_loss_list.update(loss_list)
-            loss_sum.backward()
+            train_loss.update(mseloss)
+            mseloss.backward()
 
             if args.distributed:
                 dist.barrier()
 
-            # wandb.log({"train_loss_sum": train_loss_sum.item() * 1000,
-            #            "train_loss_cdc": dense_loss.item() * 1000})
 
-            #save train point cloud
-            if epoch % args.val_freq == 0 and idx == 1:
-                print("save train point cloud")
-                train_gt_list = [gt_fps_list[i][0].squeeze().detach().cpu().numpy() for i in range(4)]
-                train_recon_list = [ret[i][0].squeeze().detach().cpu().numpy() for i in range(4)]  
-                if args.local_rank == 0:
-                    wandb.log({'train_gt': [wandb.Object3D(i) for i in train_gt_list],
-                            'train_recon': [wandb.Object3D(i) for i in train_recon_list]})
-
-            '''
-            pointr损失
-            sparse_loss, loss_coarse, loss_fine = base_model.module.get_loss(ret, gt, epoch)
-            dense_loss = loss_coarse + loss_fine
-            # sparse_loss, dense_loss = base_model.module.get_loss(ret, gt, epoch)
-            wandb.log({"Loss/Batch/Sparse": sparse_loss.item() * 1000,
-                       "Loss/Batch/Coarse": loss_coarse.item() * 1000,
-                       "Loss/Batch/Fine": loss_fine.item() * 1000})
-
-            _loss = sparse_loss + dense_loss 
-            _loss.backward()
-            '''
-            # forward
+           # forward
             if num_iter == config.step_per_update:
                 torch.nn.utils.clip_grad_norm_(base_model.parameters(), getattr(config, 'grad_norm_clip', 10), norm_type=2)
                 num_iter = 0
                 optimizer.step()
                 base_model.zero_grad()
             
-            # if args.distributed:
-            #     sparse_loss = dist_utils.reduce_tensor(sparse_loss, args)
-            #     dense_loss = dist_utils.reduce_tensor(dense_loss, args)
-            #     losses.update([sparse_loss.item() * 1000, dense_loss.item() * 1000])
-            # else:
-            #     losses.update([sparse_loss.item() * 1000, dense_loss.item() * 1000])
-
             if args.distributed:
                 torch.cuda.synchronize()
 
@@ -188,21 +164,14 @@ def run_net(args, config, train_writer=None, val_writer=None):
             batch_start_time = time.time()
 
             if idx % 100 == 0:
-                print_log('[Epoch %d/%d][Batch %d/%d] BatchTime = %.3f (s) DataTime = %.3f (s) Losses = %s lr = %.6f' %
+                print_log('[Epoch %d/%d][Batch %d/%d] BatchTime = %.3f (s) DataTime = %.3f (s) Losses = %.4f lr = %.6f' %
                             (epoch, config.max_epoch, idx + 1, n_batches, batch_time.val(), data_time.val(),
-                            ['%.4f' % (train_loss_list.val(i) * 1000) for i in range(5)], optimizer.param_groups[0]['lr']), logger = logger)
+                            mseloss.item(), optimizer.param_groups[0]['lr']), logger = logger)
 
-            # break
+            break
 
-            
         if args.local_rank == 0:
-            wandb.log({"train_loss_sum": train_loss_sum.avg() * 1000, 
-                    "train_loss_cdc": train_loss_list.avg(0) * 1000,
-                    "train_loss_cd1": train_loss_list.avg(1) * 1000,
-                    "train_loss_cd2": train_loss_list.avg(2) * 1000,
-                    "train_loss_cd3": train_loss_list.avg(3) * 1000,
-                    "train_loss_partial_matching": train_loss_list.avg(4) * 1000,})
-
+            wandb.log({"train_mse_loss": train_loss.avg()})
 
 
         if isinstance(scheduler, list):
@@ -212,12 +181,12 @@ def run_net(args, config, train_writer=None, val_writer=None):
             scheduler.step()
         epoch_end_time = time.time()
 
-        print_log('[Training] EPOCH: %d EpochTime = %.3f (s) Losses = %s' %
-            (epoch,  epoch_end_time - epoch_start_time, '%.4f' % (train_loss_sum.avg() * 1000)), logger = logger)
+        print_log('[Training] EPOCH: %d EpochTime = %.3f (s) mse_loss = %.4f' %
+            (epoch,  epoch_end_time - epoch_start_time, train_loss.avg()), logger = logger)
 
         if epoch % args.val_freq == 0:
             # Validate the current model
-            metrics = validate(base_model, test_dataloader, epoch, ChamferDisL1, ChamferDisL2, val_writer, args, config, logger=logger)
+            metrics = validate(premodel, dif_shape, base_model, test_dataloader, epoch, args, config, logger=logger)
 
             # Save ckeckpoints
             if  metrics.better_than(best_metrics):
@@ -230,7 +199,7 @@ def run_net(args, config, train_writer=None, val_writer=None):
         train_writer.close()
         val_writer.close()
 
-def validate(base_model, test_dataloader, epoch, ChamferDisL1, ChamferDisL2, val_writer, args, config, logger = None):
+def validate(premodel, shape, base_model, test_dataloader, epoch, args, config, logger = None):
     print_log(f"[VALIDATION] Start validating epoch {epoch}", logger = logger)
     base_model.eval()  # set model to eval mode
 
@@ -253,8 +222,8 @@ def validate(base_model, test_dataloader, epoch, ChamferDisL1, ChamferDisL2, val
 
     with torch.no_grad():
         for idx, (taxonomy_ids, model_ids, data) in enumerate(tqdm(test_dataloader)):
-            taxonomy_id = taxonomy_ids[0] if isinstance(taxonomy_ids[0], str) else taxonomy_ids[0].item()
-            model_id = model_ids[0]
+            # taxonomy_id = taxonomy_ids[0] if isinstance(taxonomy_ids[0], str) else taxonomy_ids[0].item()
+            # model_id = model_ids[0]
 
             npoints = config.dataset.val._base_.N_POINTS
             dataset_name = config.dataset.val._base_.NAME
@@ -267,53 +236,60 @@ def validate(base_model, test_dataloader, epoch, ChamferDisL1, ChamferDisL2, val
                 partial = partial.cuda()
             else:
                 raise NotImplementedError(f'Train phase do not support {dataset_name}')
+            torch.cuda.empty_cache()
 
-            ret = base_model(partial, gt)       #folding_AE
-            # ret = base_model(partial)     #general
-            dense_points = ret[-1]
+
+            seed, seed_feat, pred_pcds = premodel.forward_encoder(partial)           
+            x_i, x_i_store_list = base_model.module.sample(seed_feat, shape, guide_w = 2.0)
+            x_i = x_i.transpose(-2, -1)
+            pred_pcds = premodel.forward_decoder(gt=None, gt_pre=x_i, seed=seed,
+                                                 seed_feat=seed_feat, pred_pcds=pred_pcds)
+
+            dense_points = pred_pcds[-1]
             recon = copy.deepcopy(dense_points)
 
-            loss_sum, loss_list, gt_fps_list = base_model.module.get_loss(ret, partial, gt)
+            loss_sum, loss_list, gt_fps_list = premodel.get_loss(pred_pcds, partial, gt)
             test_loss_sum.update(loss_sum)
             test_loss_list.update(loss_list)
             
             #保存图片
-            if idx % 500 == 0:
+            if idx % 10 == 0:
 
-                test_gt_list = [gt_fps_list[i].squeeze().detach().cpu().numpy() for i in range(4)]
-                test_recon_list = [ret[i].squeeze().detach().cpu().numpy() for i in range(4)]  
+                test_gt_list = [gt_fps_list[i][0].squeeze().detach().cpu().numpy() for i in range(4)]
+                test_recon_list = [pred_pcds[i][0].squeeze().detach().cpu().numpy() for i in range(4)]  
                 if args.local_rank == 0:
                     wandb.log({'test_gt': [wandb.Object3D(i) for i in test_gt_list],
                         'test_recon': [wandb.Object3D(i) for i in test_recon_list]})
 
-                input_gt = gt.squeeze().detach().cpu().numpy()
-                recon = recon.squeeze().detach().cpu().numpy()
+                input_gt = gt[0].squeeze().detach().cpu().numpy()
+                recon = recon[0].squeeze().detach().cpu().numpy()
                 input_gt_img = misc.get_ptcloud_img(input_gt)
                 im = Image.fromarray(input_gt_img)
-                gt_savepth = os.path.join(gt_pth, '%s.jpg' % model_ids)
+                gt_savepth = os.path.join(gt_pth, '%s.jpg' % model_ids[0])
                 im.save(gt_savepth)
                 recon_img = misc.get_ptcloud_img(recon)
                 im = Image.fromarray(recon_img)
-                recon_savepth = os.path.join(recon_pth, '%s.jpg' % model_ids)
+                recon_savepth = os.path.join(recon_pth, '%s.jpg' % model_ids[0])
                 im.save(recon_savepth)
 
 
-            _metrics = Metrics.get(dense_points, gt)
-            if args.distributed:
-                _metrics = [dist_utils.reduce_tensor(_metric, args).item() for _metric in _metrics]
-            else:
-                _metrics = [_metric.item() for _metric in _metrics]
+            for i in range(config.dataset.val.others.bs):
+                _metrics = Metrics.get(dense_points[i].unsqueeze(0), gt[i].unsqueeze(0))
+                if args.distributed:
+                    _metrics = [dist_utils.reduce_tensor(_metric, args).item() for _metric in _metrics]
+                else:
+                    _metrics = [_metric.item() for _metric in _metrics]
 
-            for _taxonomy_id in taxonomy_ids:
-                if _taxonomy_id not in category_metrics:
-                    category_metrics[_taxonomy_id] = AverageMeter(Metrics.names())
-                category_metrics[_taxonomy_id].update(_metrics)
+                for _taxonomy_id in taxonomy_ids[i]:
+                    if _taxonomy_id not in category_metrics:
+                        category_metrics[_taxonomy_id] = AverageMeter(Metrics.names())
+                    category_metrics[_taxonomy_id].update(_metrics)
 
-       
-            if (idx+1) % interval == 0:
-                print_log('Test[%d/%d] Taxonomy = %s Sample = %s Losses = %s Metrics = %s' %
-                            (idx + 1, n_samples, taxonomy_id, model_id, '%.4f' % (test_loss_sum.val()*1000), 
-                            ['%.4f' % m for m in _metrics]), logger=logger)
+        
+                if (idx+1) % interval == 0:
+                    print_log('Test[%d/%d] Losses = %s Metrics = %s' %
+                                (idx + 1, n_samples, '%.4f' % (test_loss_sum.val()*1000), 
+                                ['%.4f' % m for m in _metrics]), logger=logger)
 
             # break
        

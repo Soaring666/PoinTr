@@ -1,7 +1,7 @@
 optimizer : {
   type: Adam,
   kwargs: {
-  lr : 0.0001,
+  lr : 0.0005,
   weight_decay : 0.,
   betas: [0.9, 0.999]
 }}
@@ -13,7 +13,7 @@ scheduler: {
 }}
 GradualWarmupScheduler: {
   multiplier: 1,
-  total_epoch: 20
+  total_epoch: 10
 }
 
 dataset : {
@@ -24,7 +24,7 @@ dataset : {
   test : { _base_: cfgs/dataset_configs/PCN.yaml, 
             others: {subset: 'test'}}}
             
-model : {
+premodel : {
   NAME: SeedFormer_AE, 
   feat_dim: 512, 
   embed_dim: 128,
@@ -36,8 +36,25 @@ model : {
   interpolate: three,
   attn_channel: True}
 
-total_bs : 40
-step_per_update : 1
-max_epoch : 150
 
+model : {
+  NAME: DDPM,
+  T: 1000,
+  ch: 128,
+  condition_num: 256,
+  N: 512,
+  ch_mult: [1, 2, 2, 2],
+  attn: [2],
+  num_res_blocks: 2,
+  dropout: 0.1,
+  betas: [0.0001, 0.02],
+  n_T: 1000,
+  drop_prob: 0.1}
+
+total_train_bs : 100
+total_val_bs: 100
+step_per_update : 1
+max_epoch : 200
+
+premodel_ckpts: experiments/Seedformer_AE/PCN_models/default/ckpt-last.pth 
 consider_metric: CDL1

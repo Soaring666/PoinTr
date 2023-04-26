@@ -7,7 +7,7 @@ def get_args():
     parser.add_argument(
         '--config', 
         type = str, 
-        default = './cfgs/PCN_models/Seedformer_AE.yaml', 
+        default = './cfgs/PCN_models/DDPM.yaml', 
         help = 'yaml config file')
     parser.add_argument(
         '--launcher',
@@ -32,7 +32,7 @@ def get_args():
     parser.add_argument('--exp_name', type = str, default='default', help = 'experiment name')
     parser.add_argument('--start_ckpts', type = str, default=None, help = 'reload used ckpt path')
     parser.add_argument('--ckpts', type = str, default=None, help = 'test used ckpt path')
-    parser.add_argument('--val_freq', type = int, default=5, help = 'test freq')
+    parser.add_argument('--val_freq', type = int, default=20, help = 'test freq')
     parser.add_argument(
         '--resume', 
         action='store_true', 
