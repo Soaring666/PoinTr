@@ -147,7 +147,6 @@ def run_net(args, config, train_writer=None, val_writer=None):
             
             train_loss.update(mseloss)
             mseloss.backward()
-            base_model.zero_grad()
 
             if args.distributed:
                 dist.barrier()
@@ -155,7 +154,9 @@ def run_net(args, config, train_writer=None, val_writer=None):
 
            # forward
             if num_iter == config.step_per_update:
-                # torch.nn.utils.clip_grad_norm_(base_model.parameters(), getattr(config, 'grad_norm_clip', 10), norm_type=2)
+                parameters = [p for p in base_model.module.parameters() if p.grad is not None]
+                total_norm = torch.norm(torch.stack([torch.norm(p.grad.detach(),2) for p in parameters]), 2)
+                torch.nn.utils.clip_grad_norm_(base_model.parameters(), getattr(config, 'grad_norm_clip', 10), norm_type=2)
                 num_iter = 0
                 optimizer.step()
                 base_model.zero_grad()
@@ -167,9 +168,9 @@ def run_net(args, config, train_writer=None, val_writer=None):
             batch_start_time = time.time()
 
             if idx % 100 == 0:
-                print_log('[Epoch %d/%d][Batch %d/%d] BatchTime = %.3f (s) DataTime = %.3f (s) Losses = %.4f lr = %.6f' %
+                print_log('[Epoch %d/%d][Batch %d/%d] BatchTime = %.3f (s) DataTime = %.3f (s) Losses = %.4f lr = %.6f total_norm=%.6f' %
                             (epoch, config.max_epoch, idx + 1, n_batches, batch_time.val(), data_time.val(),
-                            mseloss.item(), optimizer.param_groups[0]['lr']), logger = logger)
+                            mseloss.item(), optimizer.param_groups[0]['lr'], total_norm), logger = logger)
 
             # break
 

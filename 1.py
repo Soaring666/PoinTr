@@ -24,14 +24,14 @@ from torch import distributed as dist
 
 # device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
-class_emb = nn.Embedding(20, 3)
-a = torch.tensor([[1],[2],[1],[11]])
-print(a.shape)
-emb = class_emb(a) 
-print(emb)
+a = torch.tensor([3., 4])
+b = torch.norm(a, 2.0)
+total_norm = torch.norm(torch.stack([torch.norm(p.grad.detach(),2) for p in parameters]), 2)
 
-
-
+base_model.module.nn_model.downblocks
+parameters = [p for p in base_model.module.parameters() if p.grad is not None]
+total_norm = torch.norm(torch.stack([torch.norm(p.grad.detach(),2) for p in parameters]), 2)
+print(b)
 
 
 

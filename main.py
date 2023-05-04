@@ -2,6 +2,7 @@ import os
 os.environ["CUDA_VISIBLE_DEVICES"] = '1'
 
 from tools import test_net
+from tools import runner
 from tools import runner_ddpm
 from utils import parser, dist_utils, misc
 from utils.logger import *

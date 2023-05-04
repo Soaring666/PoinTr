@@ -364,13 +364,13 @@ def sample_and_group_knn(xyz, points, npoint, k, use_xyz=True, idx=None):
                                furthest_point_sample(xyz_flipped,
                                                      npoint))  # (B, 3, npoint)
     if idx is None:
-        idx = query_knn(k, xyz_flipped, new_xyz.permute(0, 2, 1).contiguous())
-    grouped_xyz = grouping_operation(xyz, idx)  # (B, 3, npoint, nsample)
+        idx = query_knn(k, xyz_flipped, new_xyz.permute(0, 2, 1).contiguous())  #(B, npoint, k)
+    grouped_xyz = grouping_operation(xyz, idx)  # (B, 3, npoint, k)
     grouped_xyz -= new_xyz.unsqueeze(3).repeat(1, 1, 1, k)  #relative feature
 
     if points is not None:
         grouped_points = grouping_operation(points,
-                                            idx)  # (B, f, npoint, nsample)
+                                            idx)  # (B, f, npoint, k)
         if use_xyz:
             new_points = torch.cat([grouped_xyz, grouped_points], 1)
         else:

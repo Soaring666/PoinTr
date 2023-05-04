@@ -3,6 +3,7 @@ import os
 
 import math
 import torch
+from seed_utils import utils
 from torch import nn
 from torch.nn import init
 from torch.nn import functional as F
@@ -22,7 +23,7 @@ class ConditionEmbedding(nn.Module):
         self.layer = nn.Sequential(
             nn.Linear(condition_num, input_num),
             nn.GroupNorm(32, 128),
-            nn.ReLU(inplace=False)
+            nn.LeakyReLU(0.1, inplace=False)
         )
     #     self.initialize()
 
@@ -58,7 +59,7 @@ class TimeEmbedding(nn.Module):
         self.timembedding = nn.Sequential(
             nn.Embedding.from_pretrained(emb),
             nn.Linear(d_model, dim),
-            nn.ReLU(inplace=False),
+            nn.LeakyReLU(0.1, inplace=False),
             nn.Linear(dim, dim),
         )
     #     self.initialize()
@@ -84,7 +85,6 @@ class PosEncode(nn.Module):
     def forward(self, xyz):
         '''
         xyz: coordinates of point cloud (B, 3, N)
-        x: feature of point cloud (B, C, N)
         output: feature (B, out_dim, N)
         '''
         B, _, N = xyz.shape
@@ -118,15 +118,15 @@ class Head_pos(nn.Module):
         self.layer = nn.Sequential(
             nn.Conv1d(posdim, ch, 3, 1, 1),
             nn.GroupNorm(32, ch),
-            nn.ReLU(inplace=False),
+            nn.LeakyReLU(0.1, inplace=False),
         )       
-        self.initialize()
+    #     self.initialize()
 
-    def initialize(self):
-        for module in self.layer.modules():
-            if isinstance(module, (nn.Conv1d, nn.Linear)):
-                init.xavier_uniform_(module.weight)
-                init.zeros_(module.bias)  
+    # def initialize(self):
+    #     for module in self.layer.modules():
+    #         if isinstance(module, (nn.Conv1d, nn.Linear)):
+    #             init.xavier_uniform_(module.weight)
+    #             init.zeros_(module.bias)  
 
     def forward(self, x):
         x = self.layer(self.pos_en(x))
@@ -179,19 +179,20 @@ class CrossAttn(nn.Module):
     def forward(self, q, v):
         '''
         q: pos_embedding (B, dim, N)
-        v: seed_feat (B, dim, N)
+        v: seed_feat (B, dim, N_v)
         output: head_feat (B, dim, N)
         '''
-        #q,v除了B形状不一样
+        #q,v只有N不一样
         B, C, N = q.shape
+        _, _, N_v = v.shape
         C = self.out_dim
         k = v
 
         q = self.q_map(q).view(B, C // self.num_heads, self.num_heads, N).permute(0, 2, 3, 1)  #(B, 8, N, C/8)
-        k = self.k_map(k).view(B, C // self.num_heads, self.num_heads, N).permute(0, 2, 3, 1)
-        v = self.v_map(v).view(B, C // self.num_heads, self.num_heads, N).permute(0, 2, 3, 1)
+        k = self.k_map(k).view(B, C // self.num_heads, self.num_heads, N_v).permute(0, 2, 3, 1)  #(B, 8, N_v, C/8)
+        v = self.v_map(v).view(B, C // self.num_heads, self.num_heads, N_v).permute(0, 2, 3, 1)
 
-        attn = (q @ k.transpose(-2, -1)) * self.scale       #(B, 8, N, N)
+        attn = (q @ k.transpose(-2, -1)) * self.scale       #(B, 8, N, N_v)
         attn = attn.softmax(dim=-1)
         attn = self.attn_drop(attn)
 
@@ -201,22 +202,33 @@ class CrossAttn(nn.Module):
         return x        
 
 class DownSample(nn.Module):
-    def __init__(self, in_ch):
+    '''
+    posdim: position encoding dim
+    alpha, beta: parameters of pos encoding
+    ch: channel after pos encoding
+    '''
+    def __init__(self, posdim, alpha, beta, ch):
         super().__init__()
-        self.main = nn.Conv1d(in_ch, in_ch, 3, stride=2, padding=1)
+        self.pos_en = PosEncode(posdim, alpha, beta)    #(B, posdim, 256)
+        self.layer = nn.Sequential(
+                    nn.Conv1d(posdim, ch, 3, 1, 1),
+                    nn.GroupNorm(32, ch),
+                    nn.LeakyReLU(0.1, inplace=False),
+                )       
+        self.crossattn = CrossAttn(ch, ch)
         self.c_main = nn.Conv1d(128, 128, 3, stride=2, padding=1)
     #     self.initialize()
 
-    # def initialize(self):
-    #     init.xavier_uniform_(self.main.weight)
-    #     init.zeros_(self.main.bias)
-    #     init.xavier_uniform_(self.c_main.weight)
-    #     init.zeros_(self.c_main.bias)
 
-    def forward(self, x, temb, condition, con_mask):
-        x = self.main(x)
-        condition = self.c_main(condition)
-        return x, condition
+    def forward(self, xyz, x, temb, condition, con_mask, npoint):
+        #xyz: (B, 512, 3) coordinate
+        #x: (B, ch, 512) feature
+        xyz_fps = utils.fps_subsample(xyz, npoint)      #(B, 256, 3)
+        xyz_pose = self.pos_en(xyz_fps.transpose(-2, -1))      #(B, posdim, 256)
+        pc = self.layer(xyz_pose)     #(B, ch, 256)
+        new_x = self.crossattn(pc, x)   #(B, ch, 256)
+        condition = self.c_main(condition)  #(B, 128, 256)
+        return new_x, condition, xyz_fps
 
 
 class UpSample(nn.Module):
@@ -287,22 +299,22 @@ class ResBlock(nn.Module):
         self.block1 = nn.Sequential(
             nn.Conv1d(in_ch, out_ch, 3, stride=1, padding=1),
             nn.GroupNorm(32, out_ch),
-            nn.ReLU(inplace=False),
+            nn.LeakyReLU(0.1, inplace=False),
         )
         self.temb_proj = nn.Sequential(
             nn.Linear(tdim, out_ch),
-            nn.ReLU(inplace=False),
+            nn.LeakyReLU(0.1, inplace=False),
         )
         self.cond_proj = nn.Sequential(
             nn.Conv1d(tdim//4, out_ch, 3, stride=1, padding=1),
             nn.GroupNorm(32, out_ch),
-            nn.ReLU(inplace=False),
+            nn.LeakyReLU(0.1, inplace=False),
         )
         self.block2 = nn.Sequential(
             nn.Conv1d(out_ch, out_ch, 3, stride=1, padding=1),
             nn.GroupNorm(32, out_ch),
             nn.Dropout(dropout),
-            nn.ReLU(inplace=False),
+            nn.LeakyReLU(0.1, inplace=False),
         )
         if in_ch != out_ch:
             self.shortcut = nn.Conv1d(in_ch, out_ch, 1, stride=1, padding=0)
@@ -378,7 +390,7 @@ class UNet_new(nn.Module):
                 now_ch = out_ch
                 chs.append(now_ch)
             if i != len(ch_mult) - 1:
-                self.downblocks.append(DownSample(now_ch))
+                self.downblocks.append(DownSample(posdim, alpha, beta, now_ch))
                 chs.append(now_ch)
 
         self.middleblocks = nn.ModuleList([
@@ -407,16 +419,22 @@ class UNet_new(nn.Module):
     #     init.zeros_(self.tail.bias)
 
     def forward(self, x, t, condition, con_mask):
+        #x: (B, 3, 512)
         # Timestep embedding
         temb = self.time_embedding(t)   #(B, ch*4)
         condition = self.condition_embedding(condition)  #(B, ch, N)
         con_mask = con_mask[:, None, None]    #(B, 1, 1)
         # Downsampling
         h = self.head(x)    #(B, ch, N)
+        x = x.transpose(-2, -1)
         # h = self.headcrossattn(h, condition)
         hs = [h]
         for layer in self.downblocks:
-            h, condition = layer(h, temb, condition, con_mask)
+            if layer.__class__ == DownSample:
+                npoint = x.size(1) // 2
+                h, condition, x = layer(x, h, temb, condition, con_mask, npoint)
+            else:
+                h, condition = layer(h, temb, condition, con_mask)
             hs.append(h)
         # Middle
         for layer in self.middleblocks:
