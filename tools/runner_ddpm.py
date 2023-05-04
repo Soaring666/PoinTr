@@ -81,12 +81,15 @@ def run_net(args, config, train_writer=None, val_writer=None):
         base_model = nn.DataParallel(base_model).cuda()
     # optimizer & scheduler
     optimizer, scheduler = builder.build_opti_sche(base_model, config)
-    if config.GradualWarmupScheduler is not None:
-        warmup_scheduler = config.GradualWarmupScheduler
-        scheduler = GradualWarmupScheduler(optimizer, multiplier=warmup_scheduler.multiplier, 
-                                           total_epoch=warmup_scheduler.total_epoch,
-                                           after_scheduler=scheduler)
-    # Criterion
+
+    #warmup
+    # if config.GradualWarmupScheduler is not None:
+    #     warmup_scheduler = config.GradualWarmupScheduler
+    #     scheduler = GradualWarmupScheduler(optimizer, multiplier=warmup_scheduler.multiplier, 
+    #                                        total_epoch=warmup_scheduler.total_epoch,
+    #                                        after_scheduler=scheduler)
+
+    # # Criterion
     ChamferDisL1 = ChamferDistanceL1()
     ChamferDisL2 = ChamferDistanceL2()
 
@@ -132,7 +135,6 @@ def run_net(args, config, train_writer=None, val_writer=None):
                 partial = partial.cuda()
             else:
                 raise NotImplementedError(f'Train phase do not support {dataset_name}')
-            torch.cuda.empty_cache()
 
             num_iter += 1
             seed, seed_feat, pred_pcds = premodel.forward_encoder(partial)           
@@ -145,6 +147,7 @@ def run_net(args, config, train_writer=None, val_writer=None):
             
             train_loss.update(mseloss)
             mseloss.backward()
+            base_model.zero_grad()
 
             if args.distributed:
                 dist.barrier()
@@ -168,7 +171,7 @@ def run_net(args, config, train_writer=None, val_writer=None):
                             (epoch, config.max_epoch, idx + 1, n_batches, batch_time.val(), data_time.val(),
                             mseloss.item(), optimizer.param_groups[0]['lr']), logger = logger)
 
-            break
+            # break
 
         if args.local_rank == 0:
             wandb.log({"train_mse_loss": train_loss.avg()})
@@ -184,7 +187,7 @@ def run_net(args, config, train_writer=None, val_writer=None):
         print_log('[Training] EPOCH: %d EpochTime = %.3f (s) mse_loss = %.4f' %
             (epoch,  epoch_end_time - epoch_start_time, train_loss.avg()), logger = logger)
 
-        if epoch % args.val_freq == 0:
+        if epoch != 0 and epoch % args.val_freq == 0:
             # Validate the current model
             metrics = validate(premodel, dif_shape, base_model, test_dataloader, epoch, args, config, logger=logger)
 
@@ -236,11 +239,10 @@ def validate(premodel, shape, base_model, test_dataloader, epoch, args, config, 
                 partial = partial.cuda()
             else:
                 raise NotImplementedError(f'Train phase do not support {dataset_name}')
-            torch.cuda.empty_cache()
 
 
             seed, seed_feat, pred_pcds = premodel.forward_encoder(partial)           
-            x_i, x_i_store_list = base_model.module.sample(seed_feat, shape, guide_w = 2.0)
+            x_i, x_i_store_list = base_model.module.sample(seed_feat, shape, guide_w = 5.0)
             x_i = x_i.transpose(-2, -1)
             pred_pcds = premodel.forward_decoder(gt=None, gt_pre=x_i, seed=seed,
                                                  seed_feat=seed_feat, pred_pcds=pred_pcds)
@@ -273,17 +275,16 @@ def validate(premodel, shape, base_model, test_dataloader, epoch, args, config, 
                 im.save(recon_savepth)
 
 
-            for i in range(config.dataset.val.others.bs):
+            for i, _taxonomy_id in enumerate(taxonomy_ids):
                 _metrics = Metrics.get(dense_points[i].unsqueeze(0), gt[i].unsqueeze(0))
                 if args.distributed:
                     _metrics = [dist_utils.reduce_tensor(_metric, args).item() for _metric in _metrics]
                 else:
                     _metrics = [_metric.item() for _metric in _metrics]
 
-                for _taxonomy_id in taxonomy_ids[i]:
-                    if _taxonomy_id not in category_metrics:
-                        category_metrics[_taxonomy_id] = AverageMeter(Metrics.names())
-                    category_metrics[_taxonomy_id].update(_metrics)
+                if _taxonomy_id not in category_metrics:
+                    category_metrics[_taxonomy_id] = AverageMeter(Metrics.names())
+                category_metrics[_taxonomy_id].update(_metrics)
 
         
                 if (idx+1) % interval == 0:

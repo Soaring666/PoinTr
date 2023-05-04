@@ -3,7 +3,7 @@ import torch
 # import numpy as np
 # import wandb
 # import open3d as o3d
-# import torch.nn as nn
+import torch.nn as nn
 # import PIL
 # from torch.nn import functional as F
 # from easydict import EasyDict
@@ -24,19 +24,11 @@ from torch import distributed as dist
 
 # device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
-shape = [3, 4, 5]
-a = torch.randn(shape)
-B ,N, C = a.shape
-
-print(B, N, C)
-
-
-
-
-
-
-
-
+class_emb = nn.Embedding(20, 3)
+a = torch.tensor([[1],[2],[1],[11]])
+print(a.shape)
+emb = class_emb(a) 
+print(emb)
 
 
 

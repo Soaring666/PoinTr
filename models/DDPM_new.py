@@ -1,5 +1,5 @@
 import os
-os.environ["CUDA_VISIBLE_DEVICES"] = '1'
+# os.environ["CUDA_VISIBLE_DEVICES"] = '1'
 
 import torch
 import torch.nn as nn
@@ -20,7 +20,7 @@ This technique also features in ImageGen 'Photorealistic Text-to-Image Diffusion
 https://arxiv.org/abs/2205.11487
 
 '''
-from diffusion_utils import UNet
+from diffusion_utils import UNet, UNet_new
 from typing import Dict, Tuple
 from tqdm import tqdm
 import torch
@@ -34,6 +34,7 @@ import matplotlib.pyplot as plt
 from matplotlib.animation import FuncAnimation, PillowWriter
 import numpy as np
 import wandb
+from .build import MODELS
 
 
 def ddpm_schedules(beta1, beta2, T):
@@ -64,20 +65,36 @@ def ddpm_schedules(beta1, beta2, T):
         "oma_over_somba": oma_over_somba,  # (1-\alpha_t)/\sqrt{1-\bar{\alpha_t}}
     }
 
-
-class DDPM(nn.Module):
-    def __init__(self, nn_model, betas, n_T, device, drop_prob=0.1):
-        super(DDPM, self).__init__()
-        self.nn_model = nn_model
-
+@MODELS.register_module()
+class DDPM_new(nn.Module):
+    def __init__(self, config, **kwargs):
+        """
+        unet params:
+            T: time step
+            ch: hidden dim
+            condition_num: input condition num
+            N: input
+            ch_mult: channel multiplier
+            attn: attention
+            num_res_blocks: number of residual blocks
+            dropout: conv dropout
+        ddpm params:
+            betas: betas
+            n_T: n_T
+            drop_prob: mask dropout
+        """
+        super(DDPM_new, self).__init__()
+        self.nn_model = UNet_new(config.T, config.ch, config.condition_num, config.N,
+                                 config.posdim, config.alpha, config.beta,
+                                 config.ch_mult, config.attn, config.crossattn, 
+                                 config.num_res_blocks, config.dropout)
         # register_buffer allows accessing dictionary produced by ddpm_schedules
         # e.g. can access self.sqrtab later
-        for k, v in ddpm_schedules(betas[0], betas[1], n_T).items():
+        for k, v in ddpm_schedules(config.betas[0], config.betas[1], config.n_T).items():
             self.register_buffer(k, v)
 
-        self.n_T = n_T
-        self.device = device
-        self.drop_prob = drop_prob
+        self.n_T = config.n_T
+        self.drop_prob = config.drop_prob
         self.loss_mse = nn.MSELoss()
 
     def forward(self, x, condition):
@@ -90,8 +107,8 @@ class DDPM(nn.Module):
         x = x.transpose(-2, -1)     #(B, 3, 512)
         B, C, N = x.shape
 
-        _ts = torch.randint(1, self.n_T, (x.shape[0],)).to(self.device)  # t ~ Uniform(0, n_T)  (B,)
-        noise = torch.randn_like(x)  # eps ~ N(0, 1)
+        _ts = torch.randint(1, self.n_T, (x.shape[0],)).to(x.device)  # t ~ Uniform(0, n_T)  (B,)
+        noise = torch.randn_like(x).to(x.device)  # eps ~ N(0, 1)
 
         x_t = (
             self.sqrt_bar_alpha[_ts, None, None] * x
@@ -100,13 +117,13 @@ class DDPM(nn.Module):
         # We should predict the "error term" from this x_t. Loss is what we return.
 
         # dropout context with some probability
-        con_mask = torch.bernoulli(torch.zeros(B)+self.drop_prob).to(self.device)
-        t = torch.randint(1000, (B,)).to(self.device)
+        con_mask = torch.bernoulli(torch.zeros(B)+self.drop_prob).to(x.device)
+        t = torch.randint(1000, (B,)).to(x.device)
         
         # return MSE between added noise, and our predicted noise
         return self.loss_mse(noise, self.nn_model(x_t, t, condition, con_mask))
 
-    def sample(self, condition, shape, device, guide_w = 0.0):
+    def sample(self, condition, shape, guide_w = 0.0):
         '''
         shape: B, 512, 3   (B, N, C)表示生成张量的形状
         condition: B, 128, 256
@@ -114,12 +131,13 @@ class DDPM(nn.Module):
         B, N, C = shape
         use_shape = [B, C, N]   #转换为输入到nn_module的形状
 
-        x_i = torch.randn(use_shape).to(device)  # x_T ~ N(0, 1), sample initial noise
-        c_i = condition.to(device) # context for us just cycles throught the mnist labels
+        x_i = torch.randn(use_shape).to(condition.device)  # x_T ~ N(0, 1), sample initial noise
+        c_i = condition.to(condition.device) # context for us just cycles throught the mnist labels
 
         # don't drop context at test time
-        con_mask = torch.zeros(B).to(device)     #取0是掩码
+        con_mask = torch.zeros(B)     #取0是掩码
         con_mask = torch.ones(B) - con_mask
+        con_mask = con_mask.to(condition.device)
 
         # double the batch
         c_i = c_i.repeat(2, 1 ,1)
@@ -130,14 +148,14 @@ class DDPM(nn.Module):
         print()
         for i in range(self.n_T - 1, 0, -1):
             print(f'sampling timestep {i}',end='\r')
-            t_is = torch.tensor([i], dtype=int).to(device)
+            t_is = torch.tensor([i], dtype=int).to(condition.device)
             t_is = t_is.repeat(B,)
 
             # double batch
             x_i = x_i.repeat(2,1,1)
             t_is = t_is.repeat(2)
 
-            z = torch.randn(use_shape).to(device) if i > 1 else 0
+            z = torch.randn(use_shape).to(condition.device) if i > 1 else 0
 
             # split predictions and compute weighting
             eps = self.nn_model(x_i, t_is, c_i, con_mask)
@@ -156,36 +174,36 @@ class DDPM(nn.Module):
         return x_i, x_i_store
 
 
-def train_mnist():
-    device = 'cuda'
+# def train_mnist():
+#     device = 'cuda'
 
-    # hardcoding these here
-    n_epoch = 20
-    batch_size = 4
-    n_T = 1000 # 500
-    n_classes = 10
-    n_feat = 128 # 128 ok, 256 better (but slower)
-    lrate = 1e-4
-    save_model = False
-    save_dir = './data/diffusion_outputs10/'
-    ws_test = [0.0, 0.5, 2.0] # strength of generative guidance
+#     # hardcoding these here
+#     n_epoch = 20
+#     batch_size = 4
+#     n_T = 1000 # 500
+#     n_classes = 10
+#     n_feat = 128 # 128 ok, 256 better (but slower)
+#     lrate = 1e-4
+#     save_model = False
+#     save_dir = './data/diffusion_outputs10/'
+#     ws_test = [0.0, 0.5, 2.0] # strength of generative guidance
     
 
-    unet = UNet(
-        T=1000, ch=576, ch_mult=[1, 2, 2, 2], attn=[2],
-        num_res_blocks=2, dropout=0.1).to(device)
-    ddpm = DDPM(nn_model=unet, betas=(1e-4, 0.02), n_T=n_T, device=device, drop_prob=0.1)
-    ddpm = ddpm.to(device)
-    x = torch.randn(batch_size, 576, 64).to(device)        #B, C, N  N表示encoder之后的中心点数量，C表示中心点的特征维度
-    condition = torch.randn(batch_size, 2304).to(device)
-    loss = ddpm(x, condition)
-    print(loss)
+#     unet = UNet(
+#         T=1000, ch=576, ch_mult=[1, 2, 2, 2], attn=[2],
+#         num_res_blocks=2, dropout=0.1).to(device)
+#     ddpm = DDPM(nn_model=unet, betas=(1e-4, 0.02), n_T=n_T, device=device, drop_prob=0.1)
+#     ddpm = ddpm.to(device)
+#     x = torch.randn(batch_size, 576, 64).to(device)        #B, C, N  N表示encoder之后的中心点数量，C表示中心点的特征维度
+#     condition = torch.randn(batch_size, 2304).to(device)
+#     loss = ddpm(x, condition)
+#     print(loss)
 
-    # optionally load a model
-    # ddpm.load_state_dict(torch.load("./data/diffusion_outputs/ddpm_unet01_mnist_9.pth"))
+#     # optionally load a model
+#     # ddpm.load_state_dict(torch.load("./data/diffusion_outputs/ddpm_unet01_mnist_9.pth"))
 
 
-    optim = torch.optim.Adam(ddpm.parameters(), lr=lrate)
+#     optim = torch.optim.Adam(ddpm.parameters(), lr=lrate)
 
     # for ep in range(n_epoch):
     #     print(f'epoch {ep}')
@@ -256,36 +274,35 @@ def train_mnist():
     #         torch.save(ddpm.state_dict(), save_dir + f"model_{ep}.pth")
     #         print('saved model at ' + save_dir + f"model_{ep}.pth")
 
-def train_test():
-    device = 'cpu'
+# def train_test():
+#     device = 'cpu'
 
-    # hardcoding these here
-    batch_size = 1
-    n_T = 1000 # 500
-    n_feat = 128 # 128 ok, 256 better (but slower)
-    lrate = 1e-4
-    ws_test = [0.0, 0.5, 2.0] # strength of generative guidance
+#     # hardcoding these here
+#     batch_size = 1
+#     n_T = 1000 # 500
+#     n_feat = 128 # 128 ok, 256 better (but slower)
+#     lrate = 1e-4
+#     ws_test = [0.0, 0.5, 2.0] # strength of generative guidance
     
 
-    with torch.no_grad():
-        unet = UNet(
-            T=1000, ch=128, condition_num=256, N=512,  
-            ch_mult=[1, 2, 2, 2], attn=[2], 
-            num_res_blocks=2, dropout=0.1).to(device)
-        ddpm = DDPM(nn_model=unet, betas=(1e-4, 0.02), n_T=n_T, device=device, drop_prob=0.1)
-        ddpm = ddpm.to(device)
-        x = torch.randn(batch_size, 512, 3).to(device)        #B, N, 3
-        shape = x.shape
-        condition = torch.randn(batch_size, 128, 256).to(device)
-        loss = ddpm(x, condition)
-        print(loss)
-        x_i, x_i_store_list = ddpm.sample(condition, shape, device, guide_w = 0.0)
-        print('x_i.shape:', x_i.shape)
-        print('x_i_store_list:', len(x_i_store_list))
+#     with torch.no_grad():
+#         ddpm = DDPM(T=1000, ch=128, condition_num=256, N=512,  
+#                     ch_mult=[1, 2, 2, 2], attn=[2], 
+#                     num_res_blocks=2, dropout=0.1, 
+#                     betas=(1e-4, 0.02), n_T=n_T, drop_prob=0.1)
+#         ddpm = ddpm.to(device)
+#         x = torch.randn(batch_size, 512, 3).to(device)        #B, N, 3
+#         shape = x.shape
+#         condition = torch.randn(batch_size, 128, 256).to(device)
+#         loss = ddpm(x, condition)
+#         print(loss)
+#         x_i, x_i_store_list = ddpm.sample(condition, shape, guide_w = 0.0)
+#         print('x_i.shape:', x_i.shape)
+#         print('x_i_store_list:', len(x_i_store_list))
     
 
-if __name__ == "__main__":
-    train_test()
+# if __name__ == "__main__":
+#     train_test()
 
 
 

@@ -7,7 +7,7 @@ def get_args():
     parser.add_argument(
         '--config', 
         type = str, 
-        default = './cfgs/PCN_models/DDPM.yaml', 
+        default = './cfgs/PCN_models/DDPM_new.yaml', 
         help = 'yaml config file')
     parser.add_argument(
         '--launcher',
@@ -15,9 +15,9 @@ def get_args():
         default='none',
         help='job launcher, pytorch means distributed train')     
     parser.add_argument('--local_rank', type=int, default=0)
-    parser.add_argument('--num_workers', type=int, default=4)   
+    parser.add_argument('--num_workers', type=int, default=8)   
     # seed 
-    parser.add_argument('--seed', type=int, default=0, help='random seed')
+    parser.add_argument('--seed', type=int, default=42, help='random seed')
     parser.add_argument(
         '--deterministic',
         action='store_true',
@@ -32,7 +32,7 @@ def get_args():
     parser.add_argument('--exp_name', type = str, default='default', help = 'experiment name')
     parser.add_argument('--start_ckpts', type = str, default=None, help = 'reload used ckpt path')
     parser.add_argument('--ckpts', type = str, default=None, help = 'test used ckpt path')
-    parser.add_argument('--val_freq', type = int, default=20, help = 'test freq')
+    parser.add_argument('--val_freq', type = int, default=50, help = 'test freq')
     parser.add_argument(
         '--resume', 
         action='store_true', 

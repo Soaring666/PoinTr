@@ -12,8 +12,8 @@ scheduler: {
   gamma : 0.99
 }}
 GradualWarmupScheduler: {
-  multiplie: 1,
-  total_epoch: 5
+  multiplier: 1,
+  total_epoch: 10
 }
 
 dataset : {
@@ -38,20 +38,24 @@ premodel : {
 
 
 model : {
-  NAME: DDPM,
+  NAME: DDPM_new,
   T: 1000,
   ch: 128,
   condition_num: 256,
+  posdim: 126,
+  alpha: 100,
+  beta: 1000,
   N: 512,
   ch_mult: [1, 2, 2, 2],
   attn: [2],
+  crossattn: [2],
   num_res_blocks: 2,
   dropout: 0.1,
   betas: [0.0001, 0.02],
   n_T: 1000,
   drop_prob: 0.1}
 
-total_train_bs : 100
+total_train_bs : 64
 total_val_bs: 100
 step_per_update : 1
 max_epoch : 200
