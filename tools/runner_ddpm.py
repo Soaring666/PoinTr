@@ -82,12 +82,12 @@ def run_net(args, config, train_writer=None, val_writer=None):
     # optimizer & scheduler
     optimizer, scheduler = builder.build_opti_sche(base_model, config)
 
-    #warmup
-    # if config.GradualWarmupScheduler is not None:
-    #     warmup_scheduler = config.GradualWarmupScheduler
-    #     scheduler = GradualWarmupScheduler(optimizer, multiplier=warmup_scheduler.multiplier, 
-    #                                        total_epoch=warmup_scheduler.total_epoch,
-    #                                        after_scheduler=scheduler)
+    # warmup
+    if config.GradualWarmupScheduler is not None:
+        warmup_scheduler = config.GradualWarmupScheduler
+        scheduler = GradualWarmupScheduler(optimizer, multiplier=warmup_scheduler.multiplier, 
+                                           total_epoch=warmup_scheduler.total_epoch,
+                                           after_scheduler=scheduler)
 
     # # Criterion
     ChamferDisL1 = ChamferDistanceL1()
@@ -155,7 +155,7 @@ def run_net(args, config, train_writer=None, val_writer=None):
 
            # forward
             if num_iter == config.step_per_update:
-                torch.nn.utils.clip_grad_norm_(base_model.parameters(), getattr(config, 'grad_norm_clip', 10), norm_type=2)
+                # torch.nn.utils.clip_grad_norm_(base_model.parameters(), getattr(config, 'grad_norm_clip', 10), norm_type=2)
                 num_iter = 0
                 optimizer.step()
                 base_model.zero_grad()
