@@ -32,6 +32,7 @@ from torchvision.datasets import MNIST
 from torchvision.utils import save_image, make_grid
 import matplotlib.pyplot as plt
 from matplotlib.animation import FuncAnimation, PillowWriter
+from extensions.chamfer_dist import ChamferDistanceL2, ChamferDistanceL2_split, ChamferDistanceL1, ChamferDistanceL1_PM
 import numpy as np
 import wandb
 from .build import MODELS
@@ -93,6 +94,7 @@ class DDPM_new(nn.Module):
         for k, v in ddpm_schedules(config.betas[0], config.betas[1], config.n_T).items():
             self.register_buffer(k, v)
 
+        self.CD = ChamferDistanceL1()
         self.n_T = config.n_T
         self.drop_prob = config.drop_prob
         self.loss_mse = nn.MSELoss()
@@ -119,9 +121,12 @@ class DDPM_new(nn.Module):
         # dropout context with some probability
         con_mask = torch.bernoulli(torch.zeros(B)+self.drop_prob).to(x.device)
         t = torch.randint(1000, (B,)).to(x.device)
-        
-        # return MSE between added noise, and our predicted noise
-        return self.loss_mse(noise, self.nn_model(x_t, t, condition, con_mask))
+
+        loss_mse = self.loss_mse(noise, self.nn_model(x_t, t, condition, con_mask))
+        # loss_cd = self.CD(noise, self.nn_model(x_t, t, condition, con_mask))
+        loss_all = loss_mse
+        # MSE between added noise, and our predicted noise
+        return loss_all
 
     def sample(self, condition, shape, guide_w = 0.0):
         '''

@@ -22,7 +22,7 @@ from models.seed_utils.utils import fps_subsample
 def run_net(args, config, train_writer=None, val_writer=None):
 
     if args.local_rank == 0:
-        run = wandb.init(project='diffusion')
+        run = wandb.init(project='diffusion', config=config)
 
     logger = get_logger(args.log_name)
     # build dataset
@@ -143,10 +143,10 @@ def run_net(args, config, train_writer=None, val_writer=None):
             B, N, C = gt_1.shape
             dif_shape = [config.dataset.val.others.bs, N, C]
 
-            mseloss = base_model(gt_1, seed_feat)
+            loss_all = base_model(gt_1, seed_feat)
             
-            train_loss.update(mseloss)
-            mseloss.backward()
+            train_loss.update(loss_all)
+            loss_all.backward()
 
             if args.distributed:
                 dist.barrier()
@@ -170,12 +170,12 @@ def run_net(args, config, train_writer=None, val_writer=None):
             if idx % 100 == 0:
                 print_log('[Epoch %d/%d][Batch %d/%d] BatchTime = %.3f (s) DataTime = %.3f (s) Losses = %.4f lr = %.6f total_norm=%.6f' %
                             (epoch, config.max_epoch, idx + 1, n_batches, batch_time.val(), data_time.val(),
-                            mseloss.item(), optimizer.param_groups[0]['lr'], total_norm), logger = logger)
+                            loss_all.item(), optimizer.param_groups[0]['lr'], total_norm), logger = logger)
 
             # break
 
         if args.local_rank == 0:
-            wandb.log({"train_mse_loss": train_loss.avg()})
+            wandb.log({"train_loss_all": train_loss.avg()})
 
 
         if isinstance(scheduler, list):
@@ -185,7 +185,7 @@ def run_net(args, config, train_writer=None, val_writer=None):
             scheduler.step()
         epoch_end_time = time.time()
 
-        print_log('[Training] EPOCH: %d EpochTime = %.3f (s) mse_loss = %.4f' %
+        print_log('[Training] EPOCH: %d EpochTime = %.3f (s) loss_all = %.4f' %
             (epoch,  epoch_end_time - epoch_start_time, train_loss.avg()), logger = logger)
 
         if epoch != 0 and epoch % args.val_freq == 0:
@@ -243,8 +243,8 @@ def validate(premodel, shape, base_model, test_dataloader, epoch, args, config, 
 
 
             seed, seed_feat, pred_pcds = premodel.forward_encoder(partial)           
-            x_i, x_i_store_list = base_model.module.sample(seed_feat, shape, guide_w = 5.0)
-            x_i = x_i.transpose(-2, -1)
+            x_i, x_i_store_list = base_model.module.sample(seed_feat, shape, guide_w = 3.0)
+            x_i = x_i.transpose(-2, -1)     #(B, 512, 3)
             pred_pcds = premodel.forward_decoder(gt=None, gt_pre=x_i, seed=seed,
                                                  seed_feat=seed_feat, pred_pcds=pred_pcds)
 
@@ -257,12 +257,12 @@ def validate(premodel, shape, base_model, test_dataloader, epoch, args, config, 
             
             #保存图片
             if idx % 10 == 0:
-
                 test_gt_list = [gt_fps_list[i][0].squeeze().detach().cpu().numpy() for i in range(4)]
                 test_recon_list = [pred_pcds[i][0].squeeze().detach().cpu().numpy() for i in range(4)]  
                 if args.local_rank == 0:
                     wandb.log({'test_gt': [wandb.Object3D(i) for i in test_gt_list],
-                        'test_recon': [wandb.Object3D(i) for i in test_recon_list]})
+                        'test_recon': [wandb.Object3D(i) for i in test_recon_list],
+                        'diffusion_generate': wandb.Object3D(x_i[0].squeeze().detach().cpu().numpy())})
 
                 input_gt = gt[0].squeeze().detach().cpu().numpy()
                 recon = recon[0].squeeze().detach().cpu().numpy()
@@ -363,14 +363,20 @@ crop_ratio = {
 }
 
 def test_net(args, config):
+    run = wandb.init(project='diffusion_test', config=config)
+
     logger = get_logger(args.log_name)
     print_log('Tester start ... ', logger = logger)
     _, test_dataloader = builder.dataset_builder(args, config.dataset.test)
  
+    premodel = builder.model_builder(config.premodel)
     base_model = builder.model_builder(config.model)
+
     # load checkpoints
+    builder.load_model(premodel, config.premodel_ckpts, logger=logger) 
     builder.load_model(base_model, args.ckpts, logger = logger)
     if args.use_gpu:
+        premodel.to(args.local_rank)
         base_model.to(args.local_rank)
 
     #  DDP    
@@ -381,10 +387,10 @@ def test_net(args, config):
     ChamferDisL1 = ChamferDistanceL1()
     ChamferDisL2 = ChamferDistanceL2()
 
-    test(base_model, test_dataloader, ChamferDisL1, ChamferDisL2, args, config, logger=logger)
+    test(premodel, base_model, test_dataloader, ChamferDisL1, ChamferDisL2, args, config, logger=logger)
 
-def test(base_model, test_dataloader, ChamferDisL1, ChamferDisL2, args, config, logger = None):
-
+def test(premodel, base_model, test_dataloader, ChamferDisL1, ChamferDisL2, args, config, logger = None):
+    print_log(f"[TEST] Start testing ", logger = logger)
     base_model.eval()  # set model to eval mode
 
     test_loss_list = AverageMeter(['cdc', 'cd1', 'cd2', 'cd3', 'partial_matching'])
@@ -392,32 +398,62 @@ def test(base_model, test_dataloader, ChamferDisL1, ChamferDisL2, args, config, 
 
     test_metrics = AverageMeter(Metrics.names())
     category_metrics = dict()
-    n_samples = len(test_dataloader) # bs is 1
+    n_samples = len(test_dataloader) #1200 bs is 1
 
     with torch.no_grad():
         for idx, (taxonomy_ids, model_ids, data) in enumerate(tqdm(test_dataloader)):
-            taxonomy_id = taxonomy_ids[0] if isinstance(taxonomy_ids[0], str) else taxonomy_ids[0].item()
-            model_id = model_ids[0]
+            # only use when batchsize==1
+            # taxonomy_id = taxonomy_ids[0] if isinstance(taxonomy_ids[0], str) else taxonomy_ids[0].item()
+            # model_id = model_ids[0]
 
             npoints = config.dataset.test._base_.N_POINTS
             dataset_name = config.dataset.test._base_.NAME
             if  'PCN' in dataset_name or 'ProjectShapeNet' in dataset_name:
                 partial = data[0].cuda()
                 gt = data[1].cuda()
+                B, _, C = gt.shape
+                shape = [B, 512, C]
 
-                ret = base_model(partial, gt)
-                dense_points = ret[-1]
+                seed, seed_feat, pred_pcds = premodel.forward_encoder(partial)           
+                x_i, x_i_store_list = base_model.sample(seed_feat, shape, guide_w = 5.0)
+                x_i = x_i.transpose(-2, -1)     #(B, 512, 3)
+                pred_pcds = premodel.forward_decoder(gt=None, gt_pre=x_i, seed=seed,
+                                                    seed_feat=seed_feat, pred_pcds=pred_pcds)
+
+                dense_points = pred_pcds[-1]
                 recon = copy.deepcopy(dense_points)
 
-                loss_sum, loss_list, gt_fps_list = base_model.get_loss(ret, partial, gt)
+                loss_sum, loss_list, gt_fps_list = premodel.get_loss(pred_pcds, partial, gt)
                 test_loss_sum.update(loss_sum)
                 test_loss_list.update(loss_list)
 
-                _metrics = Metrics.get(dense_points, gt, require_emd=True)
+                #保存图片
+                if idx % 10 == 0:
+                    test_gt_list = [gt_fps_list[i][0].squeeze().detach().cpu().numpy() for i in range(4)]
+                    test_recon_list = [pred_pcds[i][0].squeeze().detach().cpu().numpy() for i in range(4)]  
+                    if args.local_rank == 0:
+                        wandb.log({'test_gt': [wandb.Object3D(i) for i in test_gt_list],
+                            'test_recon': [wandb.Object3D(i) for i in test_recon_list],
+                            'diffusion_generate': wandb.Object3D(x_i[0].squeeze().detach().cpu().numpy())})
+
+                #记录指标
+                for i, _taxonomy_id in enumerate(taxonomy_ids):
+                    _metrics = Metrics.get(dense_points[i].unsqueeze(0), gt[i].unsqueeze(0))
+                    if args.distributed:
+                        _metrics = [dist_utils.reduce_tensor(_metric, args).item() for _metric in _metrics]
+                    else:
+                        _metrics = [_metric.item() for _metric in _metrics]
+
+                    if _taxonomy_id not in category_metrics:
+                        category_metrics[_taxonomy_id] = AverageMeter(Metrics.names())
+                    category_metrics[_taxonomy_id].update(_metrics)
+
+            
+                    if (idx+1) % 10 == 0:
+                        print_log('Test[%d/%d] Losses = %s Metrics = %s' %
+                                    (idx + 1, n_samples, '%.4f' % (test_loss_sum.val()*1000), 
+                                    ['%.4f' % m for m in _metrics]), logger=logger)
                 
-                if taxonomy_id not in category_metrics:
-                    category_metrics[taxonomy_id] = AverageMeter(Metrics.names())
-                category_metrics[taxonomy_id].update(_metrics)
 
             elif 'ShapeNet' in dataset_name:
                 gt = data.cuda()
@@ -461,28 +497,12 @@ def test(base_model, test_dataloader, ChamferDisL1, ChamferDisL2, args, config, 
             else:
                 raise NotImplementedError(f'Train phase do not support {dataset_name}')
             
-            #可视化生成的图像
-            if idx % 500 == 0:
-
-                test_gt_list = [gt_fps_list[i].squeeze().detach().cpu().numpy() for i in range(4)]
-                test_recon_list = [ret[i].squeeze().detach().cpu().numpy() for i in range(4)]  
-                if args.local_rank == 0:
-                    wandb.log({'test_gt': [wandb.Object3D(i) for i in test_gt_list],
-                        'test_recon': [wandb.Object3D(i) for i in test_recon_list]})
-
-
-            if (idx+1) % 200 == 0:
-                print_log('Test[%d/%d] Taxonomy = %s Sample = %s Losses = %s Metrics = %s' %
-                            (idx + 1, n_samples, taxonomy_id, model_id, '%.4f' % (test_loss_sum.val()*1000), 
-                            ['%.4f' % m for m in _metrics]), logger=logger)
-
-        if dataset_name == 'KITTI':
-            return
         for _,v in category_metrics.items():
             test_metrics.update(v.avg())
         print_log('test Metrics = %s' % (['%.4f' % test_metrics.avg(i) for i in range(4)]), logger=logger)
 
-     
+        if args.distributed:
+            torch.cuda.synchronize()
 
     # Print testing results
     shapenet_dict = json.load(open('./data/shapenet_synset_dict.json', 'r'))
@@ -495,7 +515,6 @@ def test(base_model, test_dataloader, ChamferDisL1, ChamferDisL2, args, config, 
     msg += '#ModelName\t'
     print_log(msg, logger=logger)
 
-
     for taxonomy_id in category_metrics:
         msg = ''
         msg += (taxonomy_id + '\t')
@@ -506,8 +525,29 @@ def test(base_model, test_dataloader, ChamferDisL1, ChamferDisL2, args, config, 
         print_log(msg, logger=logger)
 
     msg = ''
-    msg += 'Overall \t\t'
+    msg += 'Overall\t\t'
     for value in test_metrics.avg():
-        msg += '%.5f \t' % value
+        msg += '%.3f \t' % value
     print_log(msg, logger=logger)
-    return 
+
+    #使用wandb track重建的总loss和cdl1
+    if args.local_rank == 0:
+        wandb.log({'test_loss_sum': test_loss_sum.avg()*1000, 
+                'test_CDL1': test_metrics.avg()[1]})
+
+    columns = ['Taxonomy', 'ClassName', 'nsamples', 'F1_Score', 'CDL1', 'CDL2', 'EMD']
+    data = []
+    for taxonomy_id in category_metrics:
+        data_id = [taxonomy_id, shapenet_dict[taxonomy_id], str(category_metrics[taxonomy_id].count(0))]
+        for value in category_metrics[taxonomy_id].avg():
+            data_id.append(value)
+        data.append(data_id)
+    data_all = ['overall', '', '']
+    for value in test_metrics.avg():
+        data_all.append(value)
+    data.append(data_all)
+
+    table = wandb.Table(data=data, columns=columns)
+    if args.local_rank == 0:
+        wandb.log({'test_table': table})
+

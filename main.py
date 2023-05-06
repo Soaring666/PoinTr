@@ -49,6 +49,7 @@ def main():
     else:
         config.dataset.train.others.bs = config.total_train_bs
         config.dataset.val.others.bs = config.total_val_bs
+        config.dataset.test.others.bs = config.total_test_bs
         
     # log 
     log_args_to_file(args, 'args', logger = logger)
@@ -66,7 +67,7 @@ def main():
 
     # run
     if args.test:
-        test_net(args, config)
+        runner_ddpm.test_net(args, config)
     else:
         runner_ddpm.run_net(args, config, train_writer, val_writer)
 

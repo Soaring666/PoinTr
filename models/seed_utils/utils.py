@@ -461,7 +461,7 @@ def fps_subsample(pcd, n_points=2048):
                 n_points, pcd.shape[1]))
     new_pcd = gather_operation(
         pcd.permute(0, 2, 1).contiguous(),
-        furthest_point_sample(pcd, n_points))
+        furthest_point_sample(pcd.contiguous(), n_points))
     new_pcd = new_pcd.permute(0, 2, 1).contiguous()
     return new_pcd
 

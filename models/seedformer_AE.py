@@ -326,6 +326,8 @@ class SeedFormer_AE(nn.Module):
             gt_pre: (B, 512, 3)
             seed: (B, 256, 3)
             seed_feat: (B, 128, 256)
+            pred_pcds: list of predicted point clouds, order in [Pc, P1, P2, P3]
+                
         """
         #get gt fps
         if gt is not None:

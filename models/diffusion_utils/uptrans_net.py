@@ -247,7 +247,7 @@ class UpSample(nn.Module):
     def forward(self, x, temb, condition, con_mask):
         _, _, N = x.shape
         x = F.interpolate(
-            x, scale_factor=2, mode='nearest')
+            x, scale_factor=2, mode='nearest')  #(B, C, 2N)
         x = self.main(x)
 
         condition = F.interpolate(
