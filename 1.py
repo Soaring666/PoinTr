@@ -19,22 +19,32 @@ import torch
 import torch.multiprocessing as mp
 import argparse
 import wandb
+import copy
 from torch import distributed as dist
 
 
 # device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
-a = torch.tensor([3., 4])
-b = torch.norm(a, 2.0)
-total_norm = torch.norm(torch.stack([torch.norm(p.grad.detach(),2) for p in parameters]), 2)
+class Nnnn(nn.Module):
+    def __init__(self, in_dim, out_dim):
+        super(Nnnn, self).__init__()
+        self.layer = nn.Sequential(
+            nn.Conv1d(in_dim, out_dim, 1, 1, 0),
+            nn.ReLU(),
+        )
+    
+    def forward(self, x):
+        x = self.layer(x)
+        return x
 
-base_model.module.nn_model.downblocks
-parameters = [p for p in base_model.module.parameters() if p.grad is not None]
-total_norm = torch.norm(torch.stack([torch.norm(p.grad.detach(),2) for p in parameters]), 2)
-print(b)
+net1 = Nnnn(3, 4).cuda()
+net2 = Nnnn(4, 5).cuda()
+net3 = nn.Sequential(net1)
+net3.append(net2)
 
-
-
+x = torch.randn(2, 3, 100).cuda()
+x = net3(x)
+print(x.shape)
 
 
 

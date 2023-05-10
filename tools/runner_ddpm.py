@@ -22,7 +22,7 @@ from models.seed_utils.utils import fps_subsample
 def run_net(args, config, train_writer=None, val_writer=None):
 
     if args.local_rank == 0:
-        run = wandb.init(project='diffusion', config=config)
+        run = wandb.init(project='diffusion_pdr', config=config)
 
     logger = get_logger(args.log_name)
     # build dataset
@@ -143,7 +143,7 @@ def run_net(args, config, train_writer=None, val_writer=None):
             B, N, C = gt_1.shape
             dif_shape = [config.dataset.val.others.bs, N, C]
 
-            loss_all = base_model(gt_1, seed_feat)
+            loss_all = base_model(gt_1, seed, seed_feat)
             
             train_loss.update(loss_all)
             loss_all.backward()
@@ -243,8 +243,7 @@ def validate(premodel, shape, base_model, test_dataloader, epoch, args, config, 
 
 
             seed, seed_feat, pred_pcds = premodel.forward_encoder(partial)           
-            x_i, x_i_store_list = base_model.module.sample(seed_feat, shape, guide_w = 3.0)
-            x_i = x_i.transpose(-2, -1)     #(B, 512, 3)
+            x_i = base_model.module.sample(shape, seed, seed_feat)      #(B, 512, 3)
             pred_pcds = premodel.forward_decoder(gt=None, gt_pre=x_i, seed=seed,
                                                  seed_feat=seed_feat, pred_pcds=pred_pcds)
 

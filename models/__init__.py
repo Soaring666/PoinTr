@@ -12,3 +12,4 @@ import models.seedformer
 import models.seedformer_AE
 import models.DDPM
 import models.DDPM_new
+import models.DDPM_PDR
