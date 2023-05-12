@@ -120,9 +120,8 @@ class DDPM_new(nn.Module):
 
         # dropout context with some probability
         con_mask = torch.bernoulli(torch.zeros(B)+self.drop_prob).to(x.device)
-        t = torch.randint(1000, (B,)).to(x.device)
 
-        loss_mse = self.loss_mse(noise, self.nn_model(x_t, t, condition, con_mask))
+        loss_mse = self.loss_mse(noise, self.nn_model(x_t, _ts, condition, con_mask))
         # loss_cd = self.CD(noise, self.nn_model(x_t, t, condition, con_mask))
         loss_all = loss_mse
         # MSE between added noise, and our predicted noise

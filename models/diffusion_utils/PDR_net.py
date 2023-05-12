@@ -1,16 +1,37 @@
-import os
-os.environ["CUDA_VISIBLE_DEVICES"] = '1'
+# import os
+# os.environ["CUDA_VISIBLE_DEVICES"] = '1'
 
 import torch
 import torch.nn as nn
 import copy
 import numpy as np
 from torch.utils.data import DataLoader
-from pointnet2.models.pointnet2_ssg_sem import PointNet2SemSegSSG, calc_t_emb, swish
 from pointnet2.models.pnet import Pnet2Stage
 
 from .PDR_net_utils import Global_cond, _PointnetSAModuleBase, FeatureMapModule, PointnetKnnFPModule
 
+def calc_t_emb(ts, t_emb_dim):
+    """
+    Embed time steps into a higher dimension space
+    input:
+        ts: (B,)
+        t_emb_dim: int
+    output: 
+        t_emb: (B, t_emb_dim)
+    """
+    assert t_emb_dim % 2 == 0
+
+    # input is of shape (B) of integer time steps
+    # output is of shape (B, t_emb_dim)
+    ts = ts.unsqueeze(1)    #(B, 1)
+    half_dim = t_emb_dim // 2
+    t_emb = np.log(10000) / (half_dim - 1)
+    t_emb = torch.exp(torch.arange(half_dim) * -t_emb)
+    t_emb = t_emb.to(ts.device)   #(half_dim,)
+    t_emb = ts * t_emb
+    t_emb = torch.cat((torch.sin(t_emb), torch.cos(t_emb)), 1)
+    
+    return t_emb
 
 class Time_fc(nn.Module):
     def __init__(self, t_dim):
@@ -40,14 +61,14 @@ class PointNet2CloudCondition(nn.Module):
         c_fps = [128, 256, 256]
         c_group = [137, 265, 265]
         c_out = [256, 256, 512]
-        self.SA_modules_condition = nn.Sequential()
-        for i in range(len(npoint_condition)):
-            self.SA_modules_condition.append(_PointnetSAModuleBase(
-                npoint=npoint_condition[i],
-                radius=radius_condition[i],nsample=nsample_condition[i],
-                c_hidden=c_out[i], c_fps=c_fps[i], 
-                c_group=c_group[i], c_out=c_out[i]
-            ))
+        # self.SA_modules_condition = nn.Sequential()
+        # for i in range(len(npoint_condition)):
+        #     self.SA_modules_condition.append(_PointnetSAModuleBase(
+        #         npoint=npoint_condition[i],
+        #         radius=radius_condition[i],nsample=nsample_condition[i],
+        #         c_hidden=c_out[i], c_fps=c_fps[i], 
+        #         c_group=c_group[i], c_out=c_out[i]
+        #     ))
         
 
         # build feature transfer modules from condition point cloud to the noisy point cloud x_t at encoder
@@ -56,19 +77,19 @@ class PointNet2CloudCondition(nn.Module):
         c_noisy = [32, 64, 256, 512, 256, 256, 128]
         c_group = [137, 265, 265, 521, 265, 265, 137]
         c_out = [32, 64, 256,  512, 256, 256, 128]
-        self.encoder_feature_map = nn.Sequential()
-        for i in range(len(radius_fp)):
-            self.encoder_feature_map.append(FeatureMapModule(
-                radius=radius_fp[i], nsample=nsample_fp[i],
-                c_noisy=c_noisy[i], c_group=c_group[i], c_out=c_out[i]
-            ))
+        # self.encoder_feature_map = nn.Sequential()
+        # for i in range(len(radius_fp)):
+        #     self.encoder_feature_map.append(FeatureMapModule(
+        #         radius=radius_fp[i], nsample=nsample_fp[i],
+        #         c_noisy=c_noisy[i], c_group=c_group[i], c_out=c_out[i]
+        #     ))
     
         # build SA module for the noisy point cloud x_t
         npoint_noisy = [256, 128, 64, 16]
         radius_noisy = [0.1, 0.2, 0.4, 0.8]
         nsample_noisy = [32, 32, 32, 32]
-        c_fps = [3, 64, 128, 512]
-        c_group = [12, 73, 137, 521]
+        c_fps = [3, 32, 64, 256]
+        c_group = [12, 41, 73, 265]
         c_out = [32, 64, 256, 512]
         self.SA_modules = nn.Sequential()
         for i in range(len(npoint_noisy)):
@@ -85,18 +106,18 @@ class PointNet2CloudCondition(nn.Module):
         c_up = [256, 256, 128]
         c_group = [523, 267, 267]
         c_out = [256, 256, 128]
-        self.FP_modules_condition = nn.Sequential()
-        for i in range(len(nsample_fp_cond)):
-            self.FP_modules_condition.append(PointnetKnnFPModule(
-                nsample=nsample_fp_cond[i], 
-                c_up=c_up[i], c_group=c_group[i], c_out=c_out[i]
-            ))   
+        # self.FP_modules_condition = nn.Sequential()
+        # for i in range(len(nsample_fp_cond)):
+        #     self.FP_modules_condition.append(PointnetKnnFPModule(
+        #         nsample=nsample_fp_cond[i], 
+        #         c_up=c_up[i], c_group=c_group[i], c_out=c_out[i]
+        #     ))   
 
         # build FP module for noisy point cloud x_t
 
         nsample_fp = [32, 32, 32, 32]
         c_up = [256, 64, 32, 3]
-        c_group = [1035, 523, 523, 267]
+        c_group = [523, 267, 267, 139]
         c_out = [256, 256, 128, 128]
         self.FP_modules = nn.Sequential()
         for i in range(len(nsample_fp)):
@@ -143,44 +164,44 @@ class PointNet2CloudCondition(nn.Module):
         l_xyz.append(li_xyz)
         l_features.append(li_features)
 
-        for i in range(len(self.SA_modules_condition)):
+        for i in range(3):
 
             #condition point cloud pointnet
-            li_uvw, li_cond_features = self.SA_modules_condition[i](l_uvw[i], l_cond_features[i])
-            l_uvw.append(li_uvw)
-            l_cond_features.append(li_cond_features)
+            # li_uvw, li_cond_features = self.SA_modules_condition[i](l_uvw[i], l_cond_features[i])
+            # l_uvw.append(li_uvw)
+            # l_cond_features.append(li_cond_features)
 
             #feature transfer from condition point to noisy point
-            mapped_feature = self.encoder_feature_map[i](l_uvw[i], l_cond_features[i], l_xyz[i+1], l_features[i+1])
-            input_feature = torch.cat([mapped_feature, l_features[i+1]], dim=1)
+            # mapped_feature = self.encoder_feature_map[i](l_uvw[i], l_cond_features[i], l_xyz[i+1], l_features[i+1])
+            # input_feature = torch.cat([mapped_feature, l_features[i+1]], dim=1)
 
             #noisy point cloud pointnet
-            li_xyz, li_features = self.SA_modules[i+1](l_xyz[i+1], input_feature, t_emb=t_emb, condition_emb=condition_emb)
+            li_xyz, li_features = self.SA_modules[i+1](l_xyz[i+1], l_features[i+1], t_emb=t_emb, condition_emb=condition_emb)
             l_xyz.append(li_xyz)
             l_features.append(li_features)
 
 
-        for i in range(len(self.FP_modules_condition)):
+        for i in range(3):
             #condition feature fp
-            l_cond_features[-i-2] = self.FP_modules_condition[i](
-                                        l_uvw[-i-2], l_uvw[-i-1], l_cond_features[-i-2], l_cond_features[-i-1],
-                                        t_emb = None, condition_emb=None)
+            # l_cond_features[-i-2] = self.FP_modules_condition[i](
+            #                             l_uvw[-i-2], l_uvw[-i-1], l_cond_features[-i-2], l_cond_features[-i-1],
+            #                             t_emb = None, condition_emb=None)
             
             #feature transfer from condition point to noisy point
-            mapped_feature = self.encoder_feature_map[i+3](l_uvw[-i-1], l_cond_features[-i-1], l_xyz[-i-1], l_features[-i-1]) 
-            input_feature = torch.cat([mapped_feature, l_features[-i-1]], dim=1)
+            # mapped_feature = self.encoder_feature_map[i+3](l_uvw[-i-1], l_cond_features[-i-1], l_xyz[-i-1], l_features[-i-1]) 
+            # input_feature = torch.cat([mapped_feature, l_features[-i-1]], dim=1)
 
             #noisy feature fp
             l_features[-i-2] = self.FP_modules[i](
-                l_xyz[-i-2], l_xyz[-i-1], l_features[-i-2], input_feature,
+                l_xyz[-i-2], l_xyz[-i-1], l_features[-i-2], l_features[-i-1],
                 t_emb = t_emb, condition_emb=condition_emb)
         
         #fp l_cond_features[0] 
-        mapped_feature = self.encoder_feature_map[-1](l_uvw[0], l_cond_features[0], l_xyz[1], l_features[1])
-        input_feature = torch.cat([ mapped_feature,l_features[1] ], dim=1)    #(B, 256, 256)
+        # mapped_feature = self.encoder_feature_map[-1](l_uvw[0], l_cond_features[0], l_xyz[1], l_features[1])
+        # input_feature = torch.cat([ mapped_feature,l_features[1] ], dim=1)    #(B, 256, 256)
 
         out_feature = self.FP_modules[-1](
-            l_xyz[0], l_xyz[1], l_features[0], input_feature,
+            l_xyz[0], l_xyz[1], l_features[0], l_features[1],
             t_emb=t_emb, condition_emb=condition_emb)   #(B, 128, 512)
 
         
