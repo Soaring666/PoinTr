@@ -157,7 +157,7 @@ class PointNet2CloudCondition(nn.Module):
         global_feature = self.global_pnet(cond_feat)  #(B, 1024)
         condition_emb = global_feature
 
-        l_uvw, l_cond_features = [cond_xyz], [cond_feat]
+        # l_uvw, l_cond_features = [cond_xyz], [cond_feat]
         l_xyz, l_features = [pc], [features]
 
         li_xyz, li_features = self.SA_modules[0](l_xyz[0], l_features[0], t_emb=t_emb, condition_emb=condition_emb)

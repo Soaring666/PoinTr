@@ -1,7 +1,7 @@
 optimizer : {
   type: Adam,
   kwargs: {
-  lr : 0.0005,
+  lr : 0.00005,
   weight_decay : 0.,
   betas: [0.9, 0.999]
 }}
@@ -40,10 +40,10 @@ premodel : {
 model : {
   NAME: DDPM_PDR,
   betas: [0.0001, 0.02],
-  n_T: 1000
+  n_T: 500
   }
 
-total_train_bs : 25
+total_train_bs : 30
 total_val_bs: 40
 total_test_bs: 40
 step_per_update : 1

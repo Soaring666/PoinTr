@@ -226,17 +226,13 @@ class EdgeConv(torch.nn.Module):
         )
 
     def forward(self, inputs):
-        batch_size, dims, num_points = inputs.shape
-        if self.num_neigh is not None:
-            neigh_feature = group_local(inputs, k=self.num_neigh).contiguous()
-            central_feat = inputs.unsqueeze(dim=3).repeat(1, 1, 1, self.num_neigh)
-        else:
-            central_feat = torch.zeros(batch_size, dims, num_points, 1).to(inputs.device)
-            neigh_feature = inputs.unsqueeze(-1)
+        neigh_feature = group_local(inputs, k=self.num_neigh).contiguous()  #knn query (B, C, N, k)
+        central_feat = inputs.unsqueeze(dim=3).repeat(1, 1, 1, self.num_neigh)
+
         edge_feature = central_feat - neigh_feature
         feature = torch.cat((edge_feature, central_feat), dim=1)
         feature = self.conv(feature)
-        central_feature = feature.max(dim=-1, keepdim=False)[0]
+        central_feature = feature.max(dim=-1, keepdim=False)[0]     #(B, C, N)
         return central_feature
 
 class CrossTransformer(nn.Module):

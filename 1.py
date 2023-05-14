@@ -1,5 +1,5 @@
-import torch
-# import os
+import os
+os.environ["CUDA_VISIBLE_DEVICES"] = "1"
 # import numpy as np
 # import wandb
 # import open3d as o3d
@@ -14,7 +14,6 @@ import torch.nn as nn
 # from utils.misc import *
 # from tools import builder
 # from PIL import Image
-import os
 import torch
 import torch.multiprocessing as mp
 import argparse
@@ -24,27 +23,18 @@ from torch import distributed as dist
 
 
 # device = 'cuda' if torch.cuda.is_available() else 'cpu'
+run = wandb.init(project="test")
+a = torch.randn(512, 3).cuda()
+# b = torch.randn_like(a).cuda()
+b = copy.deepcopy(a).cuda()
+b[:20, :] = 0
+mseloss = nn.MSELoss()
+mse = mseloss(a, b)
+# print(a)
+print(mse)
 
-class Nnnn(nn.Module):
-    def __init__(self, in_dim, out_dim):
-        super(Nnnn, self).__init__()
-        self.layer = nn.Sequential(
-            nn.Conv1d(in_dim, out_dim, 1, 1, 0),
-            nn.ReLU(),
-        )
-    
-    def forward(self, x):
-        x = self.layer(x)
-        return x
 
-net1 = Nnnn(3, 4).cuda()
-net2 = Nnnn(4, 5).cuda()
-net3 = nn.Sequential(net1)
-net3.append(net2)
 
-x = torch.randn(2, 3, 100).cuda()
-x = net3(x)
-print(x.shape)
 
 
 

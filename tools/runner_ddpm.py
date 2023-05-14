@@ -22,7 +22,7 @@ from models.seed_utils.utils import fps_subsample
 def run_net(args, config, train_writer=None, val_writer=None):
 
     if args.local_rank == 0:
-        run = wandb.init(project='diffusion_pdr', config=config)
+        run = wandb.init(project='diffusion_pdr')  #, config=config)
 
     logger = get_logger(args.log_name)
     # build dataset
@@ -143,7 +143,7 @@ def run_net(args, config, train_writer=None, val_writer=None):
             B, N, C = gt_1.shape
             dif_shape = [config.dataset.val.others.bs, N, C]
 
-            loss_all = base_model(gt_1, seed)
+            loss_all = base_model(gt_1, seed, seed_feat)
             
             train_loss.update(loss_all)
             loss_all.backward()
@@ -211,6 +211,7 @@ def validate(premodel, shape, base_model, test_dataloader, epoch, args, config, 
     test_loss_sum = AverageMeter()
 
     test_metrics = AverageMeter(Metrics.names())
+    dif_gen_metric = AverageMeter(Metrics.names())
     category_metrics = dict()
     n_samples = len(test_dataloader) # 1200, bs is 1
 
@@ -243,11 +244,12 @@ def validate(premodel, shape, base_model, test_dataloader, epoch, args, config, 
 
 
             seed, seed_feat, pred_pcds = premodel.forward_encoder(partial)           
-            x_i = base_model.module.sample(shape, seed)      #(B, 512, 3)
+            x_i = base_model.module.sample(shape, seed, seed_feat)      #(B, 512, 3)
             pred_pcds = premodel.forward_decoder(gt=None, gt_pre=x_i, seed=seed,
                                                  seed_feat=seed_feat, pred_pcds=pred_pcds)
 
             dense_points = pred_pcds[-1]
+            dif_gen = copy.deepcopy(x_i)
             recon = copy.deepcopy(dense_points)
 
             loss_sum, loss_list, gt_fps_list = premodel.get_loss(pred_pcds, partial, gt)
@@ -276,17 +278,20 @@ def validate(premodel, shape, base_model, test_dataloader, epoch, args, config, 
 
 
             for i, _taxonomy_id in enumerate(taxonomy_ids):
+                dif_metrics = Metrics.get(dif_gen[i].unsqueeze(0), gt_fps_list[1][i].unsqueeze(0))
                 _metrics = Metrics.get(dense_points[i].unsqueeze(0), gt[i].unsqueeze(0))
                 if args.distributed:
+                    dif_metrics = [dist_utils.reduce_tensor(_metric, args).item() for _metric in dif_metrics]
                     _metrics = [dist_utils.reduce_tensor(_metric, args).item() for _metric in _metrics]
                 else:
+                    dif_metrics = [_metric.item() for _metric in dif_metrics]
                     _metrics = [_metric.item() for _metric in _metrics]
 
                 if _taxonomy_id not in category_metrics:
                     category_metrics[_taxonomy_id] = AverageMeter(Metrics.names())
                 category_metrics[_taxonomy_id].update(_metrics)
+                dif_gen_metric.update(dif_metrics)
 
-        
                 if (idx+1) % interval == 0:
                     print_log('Test[%d/%d] Losses = %s Metrics = %s' %
                                 (idx + 1, n_samples, '%.4f' % (test_loss_sum.val()*1000), 
@@ -298,8 +303,9 @@ def validate(premodel, shape, base_model, test_dataloader, epoch, args, config, 
         for _,v in category_metrics.items():
             test_metrics.update(v.avg())
 
-       #输出的平均值不是总体的平均值，而是每个类的平均值的平均值，好像就是论文中的表格那样计算方式
-        print_log('[Validation] EPOCH: %d  Metrics = %s' % (epoch, ['%.4f' % test_metrics.avg(i) for i in range(4)]), logger=logger)
+       #输出的平均值不是总体的平均值，而是每个类的平均值的平均值，就是论文中的表格那样计算方式
+        print_log('[Validation] EPOCH: %d  Metrics = %s dif_gen_metric = %.4f' % 
+                  (epoch, ['%.4f' % test_metrics.avg(i) for i in range(4)], dif_gen_metric.avg(1)), logger=logger)
 
         if args.distributed:
             torch.cuda.synchronize()
@@ -333,7 +339,8 @@ def validate(premodel, shape, base_model, test_dataloader, epoch, args, config, 
     #使用wandb track重建的总loss和cdl1
     if args.local_rank == 0:
         wandb.log({'test_loss_sum': test_loss_sum.avg()*1000, 
-                'test_CDL1': test_metrics.avg()[1]})
+                'test_CDL1': test_metrics.avg(1),
+                'dif_gen_cdl1': dif_gen_metric.avg(1)})
 
     columns = ['Taxonomy', 'ClassName', 'nsamples', 'F1_Score', 'CDL1', 'CDL2', 'EMD']
     data = []
