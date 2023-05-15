@@ -3,7 +3,7 @@ os.environ["CUDA_VISIBLE_DEVICES"] = '1'
 
 from tools import test_net
 from tools import runner
-from tools import runner_ddpm, seed_runner
+from tools import runner_ddpm, seed_runner, seed_runner_density
 from utils import parser, dist_utils, misc
 from utils.logger import *
 from utils.config import *
@@ -69,7 +69,7 @@ def main():
     if args.test:
         seed_runner.test_net(args, config)
     else:
-        seed_runner.run_net(args, config, train_writer, val_writer)
+        seed_runner_density.run_net(args, config, train_writer, val_writer)
 
 
 if __name__ == '__main__':

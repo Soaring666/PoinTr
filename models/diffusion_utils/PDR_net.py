@@ -40,7 +40,7 @@ class Time_fc(nn.Module):
             nn.Linear(t_dim, 4*t_dim),
             nn.ReLU(),
             nn.Linear(4*t_dim, 4*t_dim),
-            nn.ReLU(),
+            nn.ReLU()
         )
 
     def forward(self, t):
@@ -115,15 +115,15 @@ class PointNet2CloudCondition(nn.Module):
 
         # build FP module for noisy point cloud x_t
 
-        nsample_fp = [32, 32, 32, 32]
+        nsample_fp = [8, 32, 32, 32]
+        c_now = [512, 256, 256, 128]
         c_up = [256, 64, 32, 3]
-        c_group = [523, 267, 267, 139]
         c_out = [256, 256, 128, 128]
         self.FP_modules = nn.Sequential()
         for i in range(len(nsample_fp)):
             self.FP_modules.append(PointnetKnnFPModule(
                 nsample=nsample_fp[i],
-                c_up=c_up[i], c_group=c_group[i], c_out=c_out[i]
+                c_now=c_now[i], c_up=c_up[i], c_out=c_out[i]
             ))   
 
 

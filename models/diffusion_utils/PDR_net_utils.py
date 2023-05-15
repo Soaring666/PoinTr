@@ -98,6 +98,47 @@ class AttentionModule(nn.Module):
         out = out.sum(dim=-1)  # (B, c_v, N)
         return out
 
+class Cross_Attn(nn.Module):
+    def __init__(self, c_q, c_k, c_v, c_out):
+        super(Cross_Attn, self).__init__()
+        self.feat_conv = nn.Conv2d(c_q, c_out, kernel_size=1)
+        self.grouped_feat_conv = nn.Conv2d(c_k, c_out, kernel_size=1)
+        self.scale = c_out ** -0.5
+
+        self.feat_out_conv = nn.Sequential(
+            nn.Conv2d(c_v, c_out, kernel_size=1),
+            MyGroupNorm(32, c_out),
+            nn.ReLU(inplace=True)
+        )
+
+    def forward(self, feat, grouped_feat, count):
+        # feat (B, c_q, N), acts like query
+        # grouped_feat (B, c_k, N, K), acts like key and value
+        # count is of shape (B,N)
+        K = grouped_feat.shape[-1]
+        feat1 = self.feat_conv(feat.unsqueeze(-1)) # (B, c_out, N, 1)
+        feat1 = feat1.expand(-1,-1,-1,K) # (B, c_out, N, K)
+        feat1 = feat1.permute(0,2,3,1) # (B, N, K, c_out)
+
+        grouped_feat_k = self.grouped_feat_conv(grouped_feat).transpose(1, 2) # (B, N, c_out, K)
+
+        attn = torch.matmul(feat1, grouped_feat_k) * self.scale
+
+        if not count == 'all':
+            count = torch.clamp(count, min=1)
+            mask = count_to_mask(count, K) # (B, N, K)
+            mask = mask.unsqueeze(1).float().transpose(1, 2) # (B, N, 1, K)
+            attn = attn * mask + (-1e9)*(1-mask)
+
+        attn = attn.softmax(dim=-1) #(B, N, K, K)
+
+        grouped_feat_v = self.feat_out_conv(grouped_feat)  # (B, c_out, N, K)
+        grouped_feat_v = grouped_feat_v.permute(0,2,3,1)  # (B, N, K, c_out)
+        out = (attn @ grouped_feat_v).transpose(-2, -1) #(B, N, c_out, K)
+        out = out.sum(dim=-1).transpose(-2, -1)  # (B, c_out, N)
+        return out
+
+
 class Mlp_plus_t_emb(nn.Module):
     def __init__(self, in_dim, hidden_dim, out_dim):
         super(Mlp_plus_t_emb, self).__init__()
@@ -137,6 +178,55 @@ class Mlp_plus_t_emb(nn.Module):
 
         return h
 
+class Conv1d_plus_t_emb(nn.Module):
+    def __init__(self, in_dim, out_dim):
+        super(Conv1d_plus_t_emb, self).__init__()
+
+        self.t_fc = nn.Sequential(
+            nn.Linear(512, out_dim),
+            nn.ReLU(),
+            nn.Linear(out_dim, in_dim),
+            nn.ReLU()
+        ) 
+
+        self.condition_fc = nn.Sequential(
+            nn.Linear(1024, out_dim),
+            nn.ReLU(),
+            nn.Linear(out_dim, out_dim),
+            nn.ReLU()
+        )
+        
+        self.feature_mlp = nn.Sequential(
+            nn.Conv1d(in_dim, out_dim, 1, 1, 0),
+            nn.GroupNorm(32, out_dim),
+            nn.ReLU()
+        )
+
+        self.first_mlp = nn.Sequential(
+            nn.Conv1d(2*in_dim, out_dim, 1, 1, 0),
+            nn.GroupNorm(32, out_dim),
+            nn.ReLU()
+        )
+        self.second_mlp = nn.Sequential(
+            nn.Conv1d(2*out_dim, out_dim, 1, 1, 0),
+            nn.GroupNorm(32, out_dim),
+            nn.ReLU()
+        )
+        self.res_connect = nn.Sequential(
+            nn.Conv1d(in_dim, out_dim, 1, 1, 0),
+            nn.GroupNorm(32, out_dim),
+            nn.ReLU()
+        )
+
+    def forward(self, feature, t_emb, condition_emb):
+        h = self.feature_mlp(feature)     #(B, out_dim, N)
+        t_emb = self.t_fc(t_emb).unsqueeze(2).repeat(1, 1, feature.shape[2]) # shape (B, in_dim, N)
+        h = self.first_mlp(torch.cat([feature, t_emb], 1))  #(B, out_dim, N)
+        condition_emb = self.condition_fc(condition_emb).unsqueeze(2).repeat(1, 1, feature.shape[2]) # shape (B, out_dim, N) 
+        h = self.second_mlp(torch.cat([h, condition_emb], 1))
+        h = h + self.res_connect(feature)   #(B, out_dim, N)
+
+        return h
 class Global_cond(nn.Module):
     def __init__(self):
         super(Global_cond, self).__init__()
@@ -168,10 +258,12 @@ class _PointnetSAModuleBase(nn.Module):
     # set abstraction module, down sampling
     def __init__(self, npoint, radius, nsample, c_hidden, c_fps, c_group, c_out):
         super(_PointnetSAModuleBase, self).__init__()
+        self.c_group = c_out + 9
         self.npoint = npoint
+        self.conv_emb = Conv1d_plus_t_emb(c_fps, c_out) 
         self.grouper = pointnet2_utils.QueryAndGroup(radius, nsample)
-        self.mlp = Mlp_plus_t_emb(c_group, c_hidden, c_out)
-        self.attention_module = AttentionModule(c_fps, c_group, c_out)
+        # self.mlp = Mlp_plus_t_emb(c_group, c_hidden, c_out)
+        self.attention_module = Cross_Attn(c_out, self.c_group, self.c_group, c_out)
 
     def forward(self, xyz, features, t_emb=None, condition_emb=None):
         '''
@@ -197,17 +289,20 @@ class _PointnetSAModuleBase(nn.Module):
         assert self.npoint is not None
         furthest_point_idx = pointnet2_utils.furthest_point_sample(xyz, self.npoint)
         new_xyz = pointnet2_utils.gather_operation(xyz_flipped, furthest_point_idx).transpose(1, 2).contiguous() #(B, npoint, 3)
-        new_xyz_feat = pointnet2_utils.gather_operation(features.contiguous(), furthest_point_idx)   #(B, C, npoint)
+
+        #add t_emb and condition_emb on features
+        features = self.conv_emb(features, t_emb=t_emb, condition_emb=condition_emb)   #(B, c_out, N)
+        new_xyz_feat = pointnet2_utils.gather_operation(features.contiguous(), furthest_point_idx)   #(B, c_out, npoint)
 
         #ball query
-        grouped_features, count = self.grouper(xyz, new_xyz, features)  #ball query (B, C+9, npoint, nsample)
+        grouped_features, count = self.grouper(xyz, new_xyz, features)  #ball query (B, c_out+9, npoint, nsample)
         
-        if t_emb is not None:
-            out_features = self.mlp(grouped_features, t_emb=t_emb, condition_emb=condition_emb)     #out_feature (B, c_out, npoint, nsample)
-        else:
-            out_features = self.mlp(grouped_features)
+        # if t_emb is not None:
+        #     out_features = self.mlp(grouped_features, t_emb=t_emb, condition_emb=condition_emb)     #out_feature (B, c_out, npoint, nsample)
+        # else:
+        #     out_features = self.mlp(grouped_features)
         
-        new_features = self.attention_module(new_xyz_feat, grouped_features, out_features, count)  #(B, c_out, npoint)
+        new_features = self.attention_module(new_xyz_feat, grouped_features, count)  #(B, c_out, npoint)
 
         new_features_list.append(new_features)
 
@@ -236,43 +331,54 @@ class FeatureMapModule(nn.Module):
 class PointnetKnnFPModule(nn.Module):
     r"""Propigates the features of one set to another
     """
-    def __init__(self, nsample, c_up, c_group, c_out):
+    def __init__(self, nsample, c_now, c_up, c_out):
         super(PointnetKnnFPModule, self).__init__()
-        
         self.nsample = nsample
-        self.mlp1 = Mlp_plus_t_emb(c_group, c_out, c_out)
-        self.attention_module = AttentionModule(c_up, c_group, c_out)
-        self.mlp2 = Mlp_plus_t_emb(c_out+c_up+3, c_out, c_out)
+        self.c_group = c_now + 11
+        self.conv_now_emb = Conv1d_plus_t_emb(c_now, c_now)
+        self.conv_up_emb = Conv1d_plus_t_emb(c_up, c_out)
+
+        self.attention_module = Cross_Attn(c_out, self.c_group, self.c_group, c_out)
+
+        self.mlp = nn.Sequential(
+            nn.Conv1d(2*c_out, c_out, 1, 1, 0),
+            nn.GroupNorm(32, c_out),
+            nn.ReLU(),           
+            nn.Conv1d(c_out, c_out, 1, 1, 0),
+            nn.GroupNorm(32, c_out),
+            nn.ReLU()           
+        )
 
     def forward(self, up_xyz, now_xyz, up_feats, now_feats, t_emb=None, condition_emb=None):
         r"""
         Parameters
         ----------
         up_xyz : torch.Tensor
-            (B, n, 3) uplayer xyz positions
+            (B, N, 3) uplayer xyz positions
         now_xyz : torch.Tensor
-            (B, m, 3) nowlayer xyz positions
+            (B, M, 3) nowlayer xyz positions
         up_feats : torch.Tensor
-            (B, C1, n) uplayer features
+            (B, c_up, N) uplayer features
         now_feats : torch.Tensor
-            (B, C2, m) nowlayer features
+            (B, c_now, M) nowlayer features
         
         Return
         ----------
         new_features : torch.Tensor
-            (B, c_out, n) uplayer features
+            (B, c_out, N) uplayer features
         """
+        #add emb to feats
+        now_feats = self.conv_now_emb(now_feats, t_emb, condition_emb)  #(B, c_now, M)
+        up_feats = self.conv_up_emb(up_feats, t_emb, condition_emb)  #(B, c_out, N)
+
         #use knn to group features
-        grouped_feats = pointnet2_utils.group_knn(up_xyz, now_xyz, now_feats, self.nsample)  #(B, C2+11, N, K)
-        grouped_feats_out = self.mlp1(grouped_feats)  #(B, C2+11, N, K)
+        grouped_feats = pointnet2_utils.group_knn(up_xyz, now_xyz, now_feats, self.nsample)  #(B, c_now+11, N, K)
 
-        interpolated_feats = self.attention_module(up_feats, grouped_feats, grouped_feats_out, count='all')  #(B, c_out, N)
+        #use attn to gather features
+        interpolated_feats = self.attention_module(up_feats, grouped_feats, count='all')  #(B, c_out, N)
 
-        new_features = torch.cat([interpolated_feats, up_feats, up_xyz.transpose(1,2)], dim=1) # (B, c_out+C1+3, N)
-        new_features = new_features.unsqueeze(-1) # (B, c_out+C1+3, N, 1)
-    
-        new_features = self.mlp2(new_features, t_emb=t_emb, condition_emb=condition_emb)
-        new_features = new_features.squeeze(-1) # shape (B, c_out, N)
+        #use mlp to get new features       
+        new_features = self.mlp(torch.cat([interpolated_feats, up_feats], dim=1))  #(B, c_out, N)
 
         return new_features
 

@@ -10,6 +10,8 @@ import models.knn_foldingnet
 import models.FoldingNet_AE
 import models.seedformer
 import models.seedformer_AE
+import models.seedformer_density
+import models.seedformer_posenc
 import models.DDPM
 import models.DDPM_new
 import models.DDPM_PDR

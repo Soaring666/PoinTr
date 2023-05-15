@@ -102,7 +102,7 @@ def run_net(args, config, train_writer=None, val_writer=None):
         batch_start_time = time.time()
         batch_time = AverageMeter()
         data_time = AverageMeter()
-        train_loss_list = AverageMeter(['cdc', 'cd1', 'cd2', 'cd3', 'partial_matching'])
+        train_loss_list = AverageMeter(['cdc', 'cd1', 'cd2', 'cd3', 'partial_matching', 'density_loss'])
         train_loss_sum = AverageMeter()
 
         num_iter = 0
@@ -191,7 +191,8 @@ def run_net(args, config, train_writer=None, val_writer=None):
                    "train_loss_cd1": train_loss_list.avg(1) * 1000,
                    "train_loss_cd2": train_loss_list.avg(2) * 1000,
                    "cdl1------train_loss_cd3": train_loss_list.avg(3) * 1000,
-                   "train_loss_partial_matching": train_loss_list.avg(4) * 1000,})
+                   "train_loss_partial_matching": train_loss_list.avg(4) * 1000,
+                   "train_loss_density_loss": train_loss_list.avg(5) * 1000})
 
 
         if isinstance(scheduler, list):
@@ -223,7 +224,7 @@ def validate(base_model, test_dataloader, epoch, args, config, logger = None):
     print_log(f"[VALIDATION] Start validating epoch {epoch}", logger = logger)
     base_model.eval()  # set model to eval mode
 
-    test_loss_list = AverageMeter(['cdc', 'cd1', 'cd2', 'cd3', 'partial_matching'])
+    test_loss_list = AverageMeter(['cdc', 'cd1', 'cd2', 'cd3', 'partial_matching', 'density_loss'])
     test_loss_sum = AverageMeter()
 
     test_metrics = AverageMeter(Metrics.names())

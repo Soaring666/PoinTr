@@ -332,17 +332,6 @@ def square_distance(src, dst):
     dist += torch.sum(dst**2, -1).view(B, 1, M)
     return dist
 
-def distance_knn(nsample, xyz, new_xyz):
-    """get knn distance"""
-    sqrdists = square_distance(new_xyz, xyz)  # B, S, N
-    B, S, _ = sqrdists.shape
-    idx = torch.argsort(sqrdists, dim=-1, descending=False)[:, :, :nsample]     #从小到大排序(B, S, nsample)
-    index_1 = torch.arange(B).unsqueeze(1)
-    index_1 = index_1.repeat(1, S).unsqueeze(2)
-    index_2 = torch.arange(S)
-    index_2 = index_2.unsqueeze(0).repeat(B, 1).unsqueeze(2)
-    distance = sqrdists[index_1, index_2, idx]  #获得knn之间的距离(B, S, nsample)
-    return distance
 
 def query_knn(nsample, xyz, new_xyz, include_self=True):
     """Find k-NN of new_xyz in xyz"""
@@ -521,101 +510,6 @@ def indexing_neighbor(x, index):
 
     return feature
 
-class PosEncode(nn.Module):
-    def __init__(self):
-        super(PosEncode, self).__init__()
-        self.out_dim = 126  #the out featdim, 6的倍数
-        self.alpha = 100
-        self.beta = 1000
-   
-        
-    def forward(self, xyz):
-        '''
-        xyz: coordinates of point cloud (B, 3, N, K)
-        output: feature (B, out_dim, N, K)
-        '''
-        B, _, N, K = xyz.shape
-        feat_dim = self.out_dim // 6    
-
-        feat_range = torch.arange(feat_dim).float().to(xyz.device)     
-        dim_embed = torch.pow(self.beta, feat_range / feat_dim)     #(out_dim/6)
-        div_embed = torch.div(self.alpha * xyz.unsqueeze(-1), dim_embed)    #(B, 3, N, K, out_dim/6)
-
-        sin_embed = torch.sin(div_embed)
-        cos_embed = torch.cos(div_embed)
-        position_embed = torch.cat([sin_embed, cos_embed], -1)
-        position_embed = position_embed.permute(0, 1, 4, 3, 2).contiguous()
-        position_embed = position_embed.view(B, self.out_dim, N, K)
-
-        return position_embed
-
-class vTransformer_posenc(nn.Module):
-    def __init__(self,
-                 in_channel,
-                 dim=256,
-                 n_knn=16,
-                 pos_hidden_dim=64,
-                 attn_hidden_multiplier=4):
-        super(vTransformer_posenc, self).__init__()
-        self.n_knn = n_knn
-        self.conv_key = nn.Conv1d(dim, dim, 1)
-        self.conv_query = nn.Conv1d(dim, dim, 1)
-        self.conv_value = nn.Conv1d(dim, dim, 1)
-
-        self.pos_enc = PosEncode()
-        self.pos_mlp = nn.Sequential(nn.Conv2d(126, pos_hidden_dim, 1),
-                                     nn.BatchNorm2d(pos_hidden_dim), nn.ReLU(),
-                                     nn.Conv2d(pos_hidden_dim, dim, 1))
-
-        self.attn_mlp = nn.Sequential(
-            nn.Conv2d(dim, dim * attn_hidden_multiplier, 1),
-            nn.BatchNorm2d(dim * attn_hidden_multiplier), nn.ReLU(),
-            nn.Conv2d(dim * attn_hidden_multiplier, dim, 1))
-
-        self.linear_start = nn.Conv1d(in_channel, dim, 1)
-        self.linear_end = nn.Conv1d(dim, in_channel, 1)
-
-    def forward(self, x, pos):
-        """feed forward of transformer
-        Args:
-            x: Tensor of features, (B, in_channel, n)
-            pos: Tensor of positions, (B, 3, n)
-
-        Returns:
-            y: Tensor of features with attention, (B, in_channel, n)
-        """
-
-        identity = x
-
-        x = self.linear_start(x)
-        b, dim, n = x.shape
-
-        pos_flipped = pos.permute(0, 2, 1).contiguous()
-        idx_knn = query_knn(self.n_knn, pos_flipped, pos_flipped)
-        key = self.conv_key(x)  # (B, dim, N)
-        value = self.conv_value(x)
-        query = self.conv_query(x)
-
-        key = grouping_operation(key, idx_knn)  # (B, dim, N, k)
-        qk_rel = query.reshape((b, -1, n, 1)) - key         #qk relative
-
-        pos_rel = pos.reshape(
-            (b, -1, n, 1)) - grouping_operation(pos, idx_knn)  # (B, 3, N, k)
-        pos_embedding = self.pos_enc(pos_rel)   #(B, 126, N, K)
-        pos_embedding = self.pos_mlp(pos_embedding)  # (B, dim, N, k)
-
-        attention = self.attn_mlp(qk_rel + pos_embedding)
-        attention = torch.softmax(attention, -1)    #(B, dim, N, k)
-
-        # knn value is correct
-        value = grouping_operation(value,
-                                   idx_knn) + pos_embedding  # (B, dim, N, k)
-
-        agg = einsum('b c i j, b c i j -> b c i', attention,
-                     value)  # (B, dim, N)
-        y = self.linear_end(agg)  # (B, in_dim, N)
-
-        return y + identity
 
 class vTransformer(nn.Module):
     def __init__(self,

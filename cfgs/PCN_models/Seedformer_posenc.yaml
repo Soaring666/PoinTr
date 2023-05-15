@@ -25,7 +25,7 @@ dataset : {
             others: {subset: 'test'}}}
             
 model : {
-  NAME: SeedFormer, 
+  NAME: SeedFormer_posenc, 
   feat_dim: 512, 
   embed_dim: 128,
   num_p0: 512,
