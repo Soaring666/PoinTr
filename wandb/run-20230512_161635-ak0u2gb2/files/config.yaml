@@ -1,0 +1,134 @@
+wandb_version: 1
+
+GradualWarmupScheduler:
+  desc: null
+  value:
+    multiplier: 1
+    total_epoch: 10
+_wandb:
+  desc: null
+  value:
+    cli_version: 0.14.0
+    framework: torch
+    is_jupyter_run: false
+    is_kaggle_kernel: false
+    python_version: 3.9.0
+    start_time: 1683879395.856045
+    t:
+      1:
+      - 1
+      - 5
+      - 41
+      - 49
+      - 51
+      - 53
+      - 55
+      - 63
+      3:
+      - 16
+      - 23
+      4: 3.9.0
+      5: 0.14.0
+      8:
+      - 5
+consider_metric:
+  desc: null
+  value: CDL1
+dataset:
+  desc: null
+  value:
+    test:
+      _base_:
+        CARS: false
+        CATEGORY_FILE_PATH: data/PCN/PCN.json
+        COMPLETE_POINTS_PATH: data/PCN/%s/complete/%s/%s.pcd
+        NAME: PCN
+        N_POINTS: 16384
+        N_RENDERINGS: 8
+        PARTIAL_POINTS_PATH: data/PCN/%s/partial/%s/%s/%02d.pcd
+      others:
+        bs: 40
+        subset: test
+    train:
+      _base_:
+        CARS: false
+        CATEGORY_FILE_PATH: data/PCN/PCN.json
+        COMPLETE_POINTS_PATH: data/PCN/%s/complete/%s/%s.pcd
+        NAME: PCN
+        N_POINTS: 16384
+        N_RENDERINGS: 8
+        PARTIAL_POINTS_PATH: data/PCN/%s/partial/%s/%s/%02d.pcd
+      others:
+        bs: 25
+        subset: train
+    val:
+      _base_:
+        CARS: false
+        CATEGORY_FILE_PATH: data/PCN/PCN.json
+        COMPLETE_POINTS_PATH: data/PCN/%s/complete/%s/%s.pcd
+        NAME: PCN
+        N_POINTS: 16384
+        N_RENDERINGS: 8
+        PARTIAL_POINTS_PATH: data/PCN/%s/partial/%s/%s/%02d.pcd
+      others:
+        bs: 40
+        subset: test
+max_epoch:
+  desc: null
+  value: 200
+model:
+  desc: null
+  value:
+    NAME: DDPM_PDR
+    betas:
+    - 0.0001
+    - 0.02
+    n_T: 500
+optimizer:
+  desc: null
+  value:
+    kwargs:
+      betas:
+      - 0.9
+      - 0.999
+      lr: 0.0005
+      weight_decay: 0.0
+    type: Adam
+premodel:
+  desc: null
+  value:
+    NAME: SeedFormer_AE
+    attn_channel: true
+    embed_dim: 128
+    feat_dim: 512
+    interpolate: three
+    n_knn: 20
+    num_p0: 512
+    radius: 1
+    seed_factor: 2
+    up_factors:
+    - 1
+    - 4
+    - 8
+premodel_ckpts:
+  desc: null
+  value: experiments/Seedformer_AE/PCN_models/default/ckpt-last.pth
+scheduler:
+  desc: null
+  value:
+    kwargs:
+      gamma: 0.99
+      step_size: 1
+    type: StepLR
+step_per_update:
+  desc: null
+  value: 1
+total_test_bs:
+  desc: null
+  value: 40
+total_train_bs:
+  desc: null
+  value: 25
+total_val_bs:
+  desc: null
+  value: 40
