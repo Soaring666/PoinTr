@@ -7,7 +7,7 @@ def get_args():
     parser.add_argument(
         '--config', 
         type = str, 
-        default = './cfgs/PCN_models/Seedformer.yaml', 
+        default = './cfgs/PCN_models/Seedformer_denoise.yaml', 
         help = 'yaml config file')
     parser.add_argument(
         '--launcher',

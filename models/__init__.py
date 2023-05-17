@@ -12,6 +12,8 @@ import models.seedformer
 import models.seedformer_AE
 import models.seedformer_density
 import models.seedformer_posenc
+import models.seedformer_newup
+import models.seedformer_denoise
 import models.DDPM
 import models.DDPM_new
 import models.DDPM_PDR

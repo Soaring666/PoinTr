@@ -1,0 +1,45 @@
+optimizer : {
+  type: Adam,
+  kwargs: {
+  lr : 0.0001,
+  weight_decay : 0.,
+  betas: [0.9, 0.999]
+}}
+scheduler: {
+  type: StepLR,
+  kwargs: {
+  step_size: 1,
+  gamma : 0.99
+}}
+GradualWarmupScheduler: {
+  multiplier: 1,
+  total_epoch: 10
+}
+
+dataset : {
+  train : { _base_: cfgs/dataset_configs/PCN.yaml, 
+            others: {subset: 'train'}},
+  val : { _base_: cfgs/dataset_configs/PCN.yaml, 
+            others: {subset: 'test'}},
+  test : { _base_: cfgs/dataset_configs/PCN.yaml, 
+            others: {subset: 'test'}}}
+            
+model : {
+  NAME: SeedFormer_newup, 
+  feat_dim: 512, 
+  embed_dim: 128,
+  num_p0: 512,
+  n_knn: 20,
+  radius: 1,
+  up_factors: [1, 4, 8],
+  seed_factor: 2,
+  interpolate: three,
+  attn_channel: True}
+
+total_train_bs : 40
+total_val_bs: 1
+total_test_bs: 1
+step_per_update : 1
+max_epoch : 21
+
+consider_metric: CDL1

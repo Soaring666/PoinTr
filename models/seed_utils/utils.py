@@ -558,6 +558,8 @@ class vTransformer_posenc(nn.Module):
                  attn_hidden_multiplier=4):
         super(vTransformer_posenc, self).__init__()
         self.n_knn = n_knn
+        self.linear_start = nn.Conv1d(in_channel, dim, 1)
+
         self.conv_key = nn.Conv1d(dim, dim, 1)
         self.conv_query = nn.Conv1d(dim, dim, 1)
         self.conv_value = nn.Conv1d(dim, dim, 1)
@@ -572,11 +574,11 @@ class vTransformer_posenc(nn.Module):
             nn.BatchNorm2d(dim * attn_hidden_multiplier), nn.ReLU(),
             nn.Conv2d(dim * attn_hidden_multiplier, dim, 1))
 
-        self.linear_start = nn.Conv1d(in_channel, dim, 1)
         self.linear_end = nn.Conv1d(dim, in_channel, 1)
 
     def forward(self, x, pos):
         """feed forward of transformer
+        将knn所得到的k个点使用注意力机制进行聚合到中心点上,相当于聚合一遍局部特征
         Args:
             x: Tensor of features, (B, in_channel, n)
             pos: Tensor of positions, (B, 3, n)
@@ -616,6 +618,81 @@ class vTransformer_posenc(nn.Module):
         y = self.linear_end(agg)  # (B, in_dim, N)
 
         return y + identity
+
+class Knn_trans(nn.Module):
+    def __init__(self,
+                 in_channel=3,
+                 dim=256,
+                 n_knn=16,
+                 pos_hidden_dim=64,
+                 attn_hidden_multiplier=4):
+        super(Knn_trans, self).__init__()
+        self.n_knn = n_knn
+        self.start_conv = nn.Conv1d(in_channel, dim, 1)
+
+        self.conv_key = nn.Conv1d(dim, dim, 1)
+        self.conv_query = nn.Conv1d(dim, dim, 1)
+        self.conv_value = nn.Conv1d(dim, dim, 1)
+
+        self.pos_enc = PosEncode()
+        self.pos_mlp = nn.Sequential(nn.Conv2d(126, pos_hidden_dim, 1),
+                                     nn.BatchNorm2d(pos_hidden_dim), nn.ReLU(),
+                                     nn.Conv2d(pos_hidden_dim, dim, 1))
+
+        self.attn_mlp = nn.Sequential(
+            nn.Conv2d(dim, dim * attn_hidden_multiplier, 1),
+            nn.BatchNorm2d(dim * attn_hidden_multiplier), nn.ReLU(),
+            nn.Conv2d(dim * attn_hidden_multiplier, dim, 1))
+
+        self.res_conv = nn.Sequential(
+            nn.Conv1d(in_channel, dim, 1),
+            nn.BatchNorm1d(dim),
+            nn.ReLU(),
+            nn.Conv1d(dim, dim, 1)
+        )
+        
+
+    def forward(self, pos):
+        """feed forward of transformer
+        将knn所得到的k个点使用注意力机制进行聚合到中心点上,相当于聚合一遍局部特征
+        Args:
+            pos: Tensor of positions, (B, 3, n)
+
+        Returns:
+            y: Tensor of features with attention, (B, dim, n)
+        """
+
+        feat = self.start_conv(pos)  # (B, 64, N)
+        B, dim, N = feat.shape
+
+        pos_flipped = pos.permute(0, 2, 1).contiguous()
+        idx_knn = query_knn(self.n_knn, pos_flipped, pos_flipped)
+        key = self.conv_key(feat)  # (B, dim, N)
+        value = self.conv_value(feat)
+        query = self.conv_query(feat)
+
+        key = grouping_operation(key, idx_knn)  # (B, dim, N, k)
+        qk_rel = query.reshape((B, -1, N, 1)) - key         #qk relative
+
+        pos_rel = pos.reshape(
+            (B, -1, N, 1)) - grouping_operation(pos.contiguous(), idx_knn)  # (B, 3, N, k)
+        pos_embedding = self.pos_enc(pos_rel)   #(B, 126, N, K)
+        pos_embedding = self.pos_mlp(pos_embedding)  # (B, dim, N, k)
+
+        attention = self.attn_mlp(qk_rel + pos_embedding)
+        attention = torch.softmax(attention, -1)    #(B, dim, N, k)
+
+        # knn value is correct
+        value = grouping_operation(value,
+                                   idx_knn) + pos_embedding  # (B, dim, N, k)
+
+        agg = einsum('b c i j, b c i j -> b c i', attention,
+                     value)  # (B, dim, N)
+        feat_res = self.res_conv(pos)
+        
+        out = agg + feat_res
+
+        return out
 
 class vTransformer(nn.Module):
     def __init__(self,
