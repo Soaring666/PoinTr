@@ -521,10 +521,39 @@ def indexing_neighbor(x, index):
 
     return feature
 
+class PosEncode_3(nn.Module):
+    def __init__(self, out_dim=126):
+        super(PosEncode_3, self).__init__()
+        self.out_dim = out_dim  #the out featdim, 6的倍数
+        self.alpha = 100
+        self.beta = 1000
+   
+        
+    def forward(self, xyz):
+        '''
+        xyz: coordinates of point cloud (B, 3, N)
+        output: feature (B, out_dim, N)
+        '''
+        B, _, N = xyz.shape
+        feat_dim = self.out_dim // 6    
+
+        feat_range = torch.arange(feat_dim).float().to(xyz.device)     
+        dim_embed = torch.pow(self.beta, feat_range / feat_dim)     #(out_dim/6)
+        div_embed = torch.div(self.alpha * xyz.unsqueeze(-1), dim_embed)    #(B, 3, N, out_dim/6)
+
+        sin_embed = torch.sin(div_embed)
+        cos_embed = torch.cos(div_embed)
+        position_embed = torch.cat([sin_embed, cos_embed], -1)  #(B, 3, N, out_dim/3)
+        position_embed = position_embed.permute(0, 1, 3, 2).contiguous()
+        position_embed = position_embed.view(B, self.out_dim, N)
+
+        return position_embed
+
+
 class PosEncode(nn.Module):
-    def __init__(self):
+    def __init__(self, out_dim=126):
         super(PosEncode, self).__init__()
-        self.out_dim = 126  #the out featdim, 6的倍数
+        self.out_dim = out_dim  #the out featdim, 6的倍数
         self.alpha = 100
         self.beta = 1000
    
@@ -619,50 +648,43 @@ class vTransformer_posenc(nn.Module):
 
         return y + identity
 
-class Knn_trans(nn.Module):
+class Knnfeat(nn.Module):
     def __init__(self,
-                 in_channel=3,
-                 dim=256,
+                 pos_dim = 60,
+                 feat_dim = 64,
+                 out_dim=128,
                  n_knn=16,
-                 pos_hidden_dim=64,
                  attn_hidden_multiplier=4):
-        super(Knn_trans, self).__init__()
+        super(Knnfeat, self).__init__()
         self.n_knn = n_knn
-        self.start_conv = nn.Conv1d(in_channel, dim, 1)
 
-        self.conv_key = nn.Conv1d(dim, dim, 1)
-        self.conv_query = nn.Conv1d(dim, dim, 1)
-        self.conv_value = nn.Conv1d(dim, dim, 1)
+        self.conv_key = nn.Conv1d(feat_dim, out_dim, 1)
+        self.conv_query = nn.Conv1d(feat_dim, out_dim, 1)
+        self.conv_value = nn.Conv1d(feat_dim, out_dim, 1)
 
-        self.pos_enc = PosEncode()
-        self.pos_mlp = nn.Sequential(nn.Conv2d(126, pos_hidden_dim, 1),
-                                     nn.BatchNorm2d(pos_hidden_dim), nn.ReLU(),
-                                     nn.Conv2d(pos_hidden_dim, dim, 1))
+        self.pos_enc = PosEncode(pos_dim)
+        self.pos_mlp = nn.Sequential(nn.Conv2d(pos_dim, 64, 1),
+                                     nn.BatchNorm2d(64), 
+                                     nn.ReLU(),
+                                     nn.Conv2d(64, out_dim, 1))
 
         self.attn_mlp = nn.Sequential(
-            nn.Conv2d(dim, dim * attn_hidden_multiplier, 1),
-            nn.BatchNorm2d(dim * attn_hidden_multiplier), nn.ReLU(),
-            nn.Conv2d(dim * attn_hidden_multiplier, dim, 1))
+            nn.Conv2d(out_dim, out_dim * attn_hidden_multiplier, 1),
+            nn.BatchNorm2d(out_dim * attn_hidden_multiplier), nn.ReLU(),
+            nn.Conv2d(out_dim * attn_hidden_multiplier, out_dim, 1))
 
-        self.res_conv = nn.Sequential(
-            nn.Conv1d(in_channel, dim, 1),
-            nn.BatchNorm1d(dim),
-            nn.ReLU(),
-            nn.Conv1d(dim, dim, 1)
-        )
-        
 
-    def forward(self, pos):
+    def forward(self, pos, feat):
         """feed forward of transformer
         将knn所得到的k个点使用注意力机制进行聚合到中心点上,相当于聚合一遍局部特征
         Args:
-            pos: Tensor of positions, (B, 3, n)
+            pos: Tensor of positions, (B, 3, N)
+            feat: Tensor of features, (B, C, N)
 
         Returns:
-            y: Tensor of features with attention, (B, dim, n)
+            y: Tensor of features with attention, (B, out_dim, N)
         """
 
-        feat = self.start_conv(pos)  # (B, 64, N)
         B, dim, N = feat.shape
 
         pos_flipped = pos.permute(0, 2, 1).contiguous()
@@ -676,7 +698,7 @@ class Knn_trans(nn.Module):
 
         pos_rel = pos.reshape(
             (B, -1, N, 1)) - grouping_operation(pos.contiguous(), idx_knn)  # (B, 3, N, k)
-        pos_embedding = self.pos_enc(pos_rel)   #(B, 126, N, K)
+        pos_embedding = self.pos_enc(pos_rel)   #(B, 60, N, K)
         pos_embedding = self.pos_mlp(pos_embedding)  # (B, dim, N, k)
 
         attention = self.attn_mlp(qk_rel + pos_embedding)
@@ -688,11 +710,8 @@ class Knn_trans(nn.Module):
 
         agg = einsum('b c i j, b c i j -> b c i', attention,
                      value)  # (B, dim, N)
-        feat_res = self.res_conv(pos)
         
-        out = agg + feat_res
-
-        return out
+        return agg
 
 class vTransformer(nn.Module):
     def __init__(self,

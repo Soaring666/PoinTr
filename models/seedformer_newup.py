@@ -20,7 +20,7 @@ from extensions.chamfer_dist import ChamferDistanceL2, ChamferDistanceL2_split, 
 from torch import einsum
 from seed_utils.utils import vTransformer, PointNet_SA_Module_KNN, MLP_Res, MLP_CONV, fps_subsample, query_knn, grouping_operation, get_nearest_index, indexing_neighbor
 from .build import MODELS
-from seed_utils.utils import vTransformer_posenc, Knn_trans
+from seed_utils.utils import vTransformer_posenc, Knnfeat, PosEncode_3, distance_knn
 
 
 class FeatureExtractor(nn.Module):
@@ -181,9 +181,10 @@ class PosTransformer(nn.Module):
     def __init__(self, dim):
         super(PosTransformer, self).__init__()
 
-        self.conv_query = nn.Conv1d(3, dim, 1, 1, 0)
-        self.conv_key = nn.Conv1d(3, dim, 1, 1, 0)
-        self.knn_trans = Knn_trans(dim=dim)
+        self.posencode = PosEncode_3(60)
+        self.conv_query = nn.Conv1d(60, dim, 1, 1, 0)
+        self.conv_key = nn.Conv1d(60, dim, 1, 1, 0)
+        self.conv_value = nn.Conv1d(60, dim, 1, 1, 0)
 
         self.scale = dim ** -0.5
 
@@ -203,10 +204,11 @@ class PosTransformer(nn.Module):
         """
 
         B, _, N = pos.shape
+        pos_emb = self.posencode(pos)  #(B, 60, N)
 
-        query = self.conv_query(pos) # (B, dim, N)
-        key = self.conv_key(pos) # (B, dim, N)
-        value = self.knn_trans(pos)   # (B, dim, N)
+        query = self.conv_query(pos_emb) # (B, dim, N)
+        key = self.conv_key(pos_emb) # (B, dim, N)
+        value = self.conv_value(pos_emb)   # (B, dim, N)
 
         attn = torch.matmul(query.transpose(-2, -1), key) * self.scale  #(B, N, N)
         attn = attn.softmax(dim=-1) #(B, N, N)
@@ -215,7 +217,85 @@ class PosTransformer(nn.Module):
         res = self.res_conv(pos)
 
         return out+res
+    
         
+class FeatUp(nn.Module):
+    """
+    Upsample Layer with feat transformers
+    """
+    def __init__(self, dim, seed_dim, up_factor=2, i=0, radius=1, n_knn=20, interpolate='three', attn_channel=True):
+        super(FeatUp, self).__init__()
+        self.i = i
+        self.up_factor = up_factor
+        self.radius = radius
+        self.n_knn = n_knn
+        self.interpolate = interpolate
+
+        self.posenc = PosEncode_3(60)
+        self.mlp_1 = nn.Sequential(
+            nn.Conv1d(60, 64, 1),
+            nn.BatchNorm1d(64),
+            nn.ReLU(),
+            nn.Conv1d(64, 128, 1)
+        ) 
+        
+        self.mlp_2 = MLP_CONV(in_channel=128 * 2, layer_dims=[256, dim])
+
+        self.uptrans1 = UpTransformer(dim, dim, dim=64, n_knn=self.n_knn, use_upfeat=True, up_factor=None)
+        self.uptrans2 = UpTransformer(dim, dim, dim=64, n_knn=self.n_knn, use_upfeat=True, attn_channel=attn_channel, up_factor=self.up_factor)
+
+        self.upsample = nn.Upsample(scale_factor=up_factor)
+        self.mlp_delta_feature = MLP_Res(in_dim=dim*2, hidden_dim=dim, out_dim=dim)
+
+        self.mlp_delta = MLP_CONV(in_channel=dim, layer_dims=[64, 3])
+
+    def forward(self, pcd_prev, seed, seed_feat, K_prev=None):
+        """
+        Args:
+            pcd_prev: Tensor, (B, 3, N_prev)
+            seed: (B, 256, 3)
+            partial: (B, 2048, 3)
+
+        Returns:
+            pcd_new: Tensor, upsampled point cloud, (B, 3, N_prev * up_factor)
+            K_curr: Tensor, displacement feature of current step, (B, 128, N_prev * up_factor)
+        """
+        b, _, n_prev = pcd_prev.shape
+
+        # Collect seedfeature
+        if self.interpolate == 'nearest':
+            idx = get_nearest_index(pcd_prev, seed)
+            feat_upsample = indexing_neighbor(seed_feat, idx).squeeze(3) # (B, seed_dim, N_prev)
+        elif self.interpolate == 'three':
+            # three interpolate
+            idx, dis = get_nearest_index(pcd_prev, seed, k=3, return_dis=True) # (B, N_prev, 3), (B, N_prev, 3)
+            dist_recip = 1.0 / (dis + 1e-8)
+            norm = torch.sum(dist_recip, dim=2, keepdim=True) # (B, N_prev, 1)
+            weight = dist_recip / norm # (B, N_prev, 3)
+            feat_upsample = torch.sum(indexing_neighbor(seed_feat, idx) * weight.unsqueeze(1), dim=-1) # (B, seed_dim, N_prev)
+        else:
+            raise ValueError('Unknown Interpolation: {}'.format(self.interpolate))
+
+        # Query mlps
+        pcd = self.posenc(pcd_prev)  #(B, 60, N) 
+        feat_1 = self.mlp_1(pcd)
+        feat_1 = torch.cat([feat_1, feat_upsample], 1)
+        Q = self.mlp_2(feat_1)
+
+        # Upsample Transformers
+        H = self.uptrans1(pcd_prev, Q, Q, upfeat=feat_upsample) # (B, 128, N_prev)
+        feat_child = self.uptrans2(pcd_prev, H, H, upfeat=feat_upsample) # (B, 128, N_prev*up_factor)
+
+        # Get current features K
+        H_up = self.upsample(H)
+        K_curr = self.mlp_delta_feature(torch.cat([feat_child, H_up], 1))
+
+        # New point cloud
+        delta = torch.tanh(self.mlp_delta(torch.relu(K_curr))) / self.radius**self.i  # (B, 3, N_prev * up_factor)
+        pcd_new = self.upsample(pcd_prev)
+        pcd_new = pcd_new + delta
+
+        return pcd_new, K_curr
 
 class UpLayer(nn.Module):
     """
@@ -289,7 +369,26 @@ class UpLayer(nn.Module):
 
         return pcd_new, K_curr
    
-
+class Density_loss(nn.Module):
+    def __init__(self):
+        super(Density_loss, self).__init__()
+        self.loss = nn.MSELoss()
+        self.dis_avg = True
+    
+    def forward(self, seed, gt_s):
+        seed_dis = distance_knn(16, seed, seed)   #(B, 256, 16)
+        seed_dis = seed_dis.mean(dim=-1)    #(B, 256)
+        gt_dis = distance_knn(16, gt_s, gt_s)
+        gt_dis = gt_dis.mean(dim=-1)
+        if self.dis_avg:
+            dis = seed_dis.mean(dim=-1)  #(B)
+            gt_dis = gt_dis.mean(dim=-1)
+            loss = self.loss(dis, gt_dis)
+        else:
+            loss = self.loss(seed_dis, gt_dis)
+            
+        return loss
+    
 @MODELS.register_module()
 class SeedFormer_newup(nn.Module):
     """
@@ -318,32 +417,38 @@ class SeedFormer_newup(nn.Module):
         self.seed_generator = SeedGenerator(feat_dim=config.feat_dim, seed_dim=config.embed_dim, 
                                             n_knn=config.n_knn, factor=config.seed_factor, attn_channel=config.attn_channel)
 
-        #get knn features
-        self.postransformer1 = PosTransformer(64)
-        self.postransformer2 = PosTransformer(64)
-        self.postransformer3 = PosTransformer(128)
-
-        #mlp
+        #posattn
+        self.posattn = PosTransformer(64)
+        self.knnfeat = Knnfeat()
         self.mlp1 = nn.Sequential(
-            nn.Conv1d(64, 3, 1),
-            nn.BatchNorm1d(3),
-            nn.ReLU(),
-            nn.Conv1d(3, 3, 1)
+            MLP_Res(704),
+            MLP_Res(128, 64)
         )
         self.mlp2 = nn.Sequential(
-            nn.Conv1d(64, 12, 1),
-            nn.BatchNorm1d(12),
-            nn.ReLU(),
-            nn.Conv1d(12, 12, 1)
+            MLP_Res(640),
+            MLP_Res(128, 64)
         )
         self.mlp3 = nn.Sequential(
-            nn.Conv1d(128, 24, 1),
-            nn.BatchNorm1d(24),
+            nn.Conv1d(128, 64, 1),
             nn.ReLU(),
-            nn.Conv1d(24, 24, 1)
+            nn.Conv1d(64, 3, 1)
         )
+        self.mlp4 = nn.Sequential(
+            MLP_Res(704),
+            MLP_Res(128, 64)
+        )
+        self.mlp5 = nn.Sequential(
+            MLP_Res(640),
+            MLP_Res(128, 64)
+        )
+        self.mlp6 = nn.Sequential(
+            nn.Conv1d(128, 64, 1),
+            nn.ReLU(),
+            nn.Conv1d(64, 3, 1)
+        )
+        self.upsample1 = nn.Upsample(scale_factor=4)
+        self.upsample2 = nn.Upsample(scale_factor=8)
         
-
         # Upsample layers
         # up_layers = []
         # for i, config.factor in enumerate(config.up_factors):
@@ -351,6 +456,7 @@ class SeedFormer_newup(nn.Module):
         #                              i=i, n_knn=config.n_knn, radius=config.radius, 
         #                              interpolate=config.interpolate, attn_channel=config.attn_channel))
         # self.up_layers = nn.ModuleList(up_layers)
+        self.density_loss = Density_loss()
 
     def forward(self, partial_cloud):
         """
@@ -396,22 +502,59 @@ class SeedFormer_newup(nn.Module):
         pred_pcds.append(seed)
 
         # Upsample layers
+        # pcd = fps_subsample(torch.cat([seed, partial_cloud], 1), self.num_p0) # (B, num_p0, 3)
+        # K_prev = None
+        # pcd = pcd.permute(0, 2, 1).contiguous() # (B, 3, num_p0)
+        # seed = seed.permute(0, 2, 1).contiguous() # (B, 3, 256)
+        # for layer in self.up_layers:
+        #     pcd, K_prev = layer(pcd, seed, seed_feat, K_prev)
+        #     pred_pcds.append(pcd.permute(0, 2, 1).contiguous())
+
+
+        ######### newup_2
         pcd = fps_subsample(torch.cat([seed, partial_cloud], 1), self.num_p0) # (B, 512, 3)
-        pcd1_feat = self.postransformer1(pcd.transpose(-2, -1))   #(B, 64, 512)
-        pcd1 = self.mlp1(pcd1_feat).permute(0, 2, 1).contiguous()  #(B, 512, 3)
+        pcd1_feat = self.posattn(pcd.transpose(-2, -1).contiguous())   #(B, 64, 512)
+        pcd1_groupfeat = self.knnfeat(pcd.transpose(-2, -1).contiguous(), pcd1_feat)   #(B, 128, 512)
+        pcd1_feat = torch.cat([pcd1_groupfeat, pcd1_feat], 1)   #(B, 192, 512)
+
+        pcd1_feat = torch.cat([pcd1_feat, feat.repeat(1, 1, pcd1_feat.size(2))], 1)   #(B, 704, 512)
+        pcd1_feat = self.mlp1(pcd1_feat) #(B, 128, 512)
+        pcd1_feat = torch.cat([pcd1_feat, feat.repeat(1, 1, pcd1_feat.size(2))], 1)   #(B, 640, 512)
+        pcd1_feat = self.mlp2(pcd1_feat) #(B, 128, 512)
+        pcd1_delta = self.mlp3(pcd1_feat).transpose(-2, -1).contiguous()    #(B, 512, 3)
+        pcd1 = pcd + pcd1_delta
         pred_pcds.append(pcd1)
+
+        pcd = fps_subsample(torch.cat([seed, partial_cloud, pcd1], 1), self.num_p0) # (B, 512, 3)
+        pcd2_feat = self.posattn(pcd.transpose(-2, -1).contiguous())   #(B, 64, 512)
+        pcd2_groupfeat = self.knnfeat(pcd.transpose(-2, -1).contiguous(), pcd2_feat)   #(B, 128, 512)
+        pcd2_feat = torch.cat([pcd2_groupfeat, pcd2_feat], 1)   #(B, 192, 512)
+        pcd2_feat = self.upsample1(pcd2_feat)   #(B, 192, 2048)
+
+        pcd2_feat = torch.cat([pcd2_feat, feat.repeat(1, 1, pcd2_feat.size(2))], 1)   #(B, 704, 2048)
+        pcd2_feat = self.mlp1(pcd2_feat) #(B, 128, 2048)
+        pcd2_feat = torch.cat([pcd2_feat, feat.repeat(1, 1, pcd2_feat.size(2))], 1)   #(B, 640, 2048) 
+        pcd2_feat = self.mlp2(pcd2_feat) #(B, 128, 2048)
+        pcd2_delta = self.mlp3(pcd2_feat).transpose(-2, -1).contiguous()    #(B, 2048, 3)
+        pcd2 = self.upsample1(pcd.transpose(-2, -1).contiguous()).transpose(-2, -1).contiguous() + pcd2_delta
         
-        pcd2 = fps_subsample(torch.cat([pcd1, seed, partial_cloud], 1), self.num_p0) #(B, 512, 3)
-        pcd2_feat = self.postransformer2(pcd2.transpose(-2, -1))   #(B, 64, 512)
-        pcd2 = self.mlp2(pcd2_feat).reshape(B, 3, 2048).transpose(-2, -1)  #(B, 2048, 3)
         pred_pcds.append(pcd2)
+ 
+        pcd = fps_subsample(torch.cat([seed, partial_cloud, pcd1, pcd2], 1), 2048) # (B, 2048, 3)
+        pcd3_feat = self.posattn(pcd.transpose(-2, -1).contiguous())   #(B, 64, 2048)
+        pcd3_groupfeat = self.knnfeat(pcd.transpose(-2, -1).contiguous(), pcd3_feat)   #(B, 128, 2048)
+        pcd3_feat = torch.cat([pcd3_groupfeat, pcd3_feat], 1)   #(B, 192, 2048)
+        pcd3_feat = self.upsample2(pcd3_feat)   #(B, 192, 16384)
 
-        pcd3 = fps_subsample(torch.cat([pcd2, seed, partial_cloud], 1), self.num_p1) #(B, 2048, 3)
-        pcd3_feat = self.postransformer3(pcd3.transpose(-2, -1))   #(B, 128, 2048)
-        pcd3 = self.mlp3(pcd3_feat).reshape(B, 3, 16384).transpose(-2, -1)  #(B, 16384, 3)
+        pcd3_feat = torch.cat([pcd3_feat, feat.repeat(1, 1, pcd3_feat.size(2))], 1)   #(B, 704, 16384)
+        pcd3_feat = self.mlp4(pcd3_feat) #(B, 128, 16384)
+        pcd3_feat = torch.cat([pcd3_feat, feat.repeat(1, 1, pcd3_feat.size(2))], 1)   #(B, 640, 16384) 
+        pcd3_feat = self.mlp5(pcd3_feat) #(B, 128, 16384)
+        pcd3_delta = self.mlp6(pcd3_feat).transpose(-2, -1).contiguous()    #(B, 16384, 3)
+        pcd3 = self.upsample2(pcd.transpose(-2, -1).contiguous()).transpose(-2, -1).contiguous() + pcd3_delta
+        
         pred_pcds.append(pcd3)
-
-
+        
         return pred_pcds
     
     def get_loss(self, recon, partial, gt):
@@ -444,11 +587,12 @@ class SeedFormer_newup(nn.Module):
         cd2 = CD(P2, gt_2)
         cd3 = CD(P3, gt)
 
+        density_loss = self.density_loss(Pc, gt_c)
 
         partial_matching = PM(partial, P3)
 
-        loss_sum = (cdc + cd1 + cd2 + cd3 + partial_matching)
-        loss_list = [cdc, cd1, cd2, cd3, partial_matching]
+        loss_sum = (cdc + cd1 + 2*cd2 + 4*cd3 + partial_matching + density_loss)
+        loss_list = [cdc, cd1, cd2, cd3, partial_matching, density_loss]
         return loss_sum, loss_list, [gt_c, gt_1, gt_2, gt]
 
 
