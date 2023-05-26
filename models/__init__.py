@@ -5,6 +5,8 @@ import models.GRNet
 import models.PCN
 import models.FoldingNet
 import models.SnowFlakeNet
+import models.Snow_fusion
+import models.Snow_new
 import models.AdaPoinTr
 import models.knn_foldingnet
 import models.FoldingNet_AE

@@ -5,6 +5,7 @@ import wandb
 import json
 import time
 import copy
+from tqdm import tqdm
 from PIL import Image
 from tools import builder
 from utils import misc, dist_utils
@@ -12,6 +13,7 @@ from utils.logger import *
 from utils.AverageMeter import AverageMeter
 from utils.metrics import Metrics
 from extensions.chamfer_dist import ChamferDistanceL1, ChamferDistanceL2
+from warmup_scheduler import GradualWarmupScheduler
 
 # os.environ["CUDA_VISIBLE_DEVICES"] = '1'
 # device = torch.device('cuda:1' if torch.cuda.is_available() else 'cpu')
@@ -19,7 +21,7 @@ from extensions.chamfer_dist import ChamferDistanceL1, ChamferDistanceL2
 def run_net(args, config, train_writer=None, val_writer=None):
 
     wandb.login()
-    run = wandb.init(project='PoinTr')
+    run = wandb.init(project='seedformer', config=config)
 
     logger = get_logger(args.log_name)
     # build dataset
@@ -71,10 +73,16 @@ def run_net(args, config, train_writer=None, val_writer=None):
     else:
         print_log('Using Data parallel ...' , logger = logger)
         base_model = nn.DataParallel(base_model).cuda()
-        base_model = base_model.cuda()
     # optimizer & scheduler
     optimizer, scheduler = builder.build_opti_sche(base_model, config)
-    
+
+    #####################warmup
+    # if config.GradualWarmupScheduler is not None:
+    #     warmup_scheduler = config.GradualWarmupScheduler
+    #     scheduler = GradualWarmupScheduler(optimizer, multiplier=warmup_scheduler.multiplier, 
+    #                                        total_epoch=warmup_scheduler.total_epoch,
+    #                                        after_scheduler=scheduler)
+
     # Criterion
     ChamferDisL1 = ChamferDistanceL1()
     ChamferDisL2 = ChamferDistanceL2()
@@ -95,8 +103,8 @@ def run_net(args, config, train_writer=None, val_writer=None):
         batch_start_time = time.time()
         batch_time = AverageMeter()
         data_time = AverageMeter()
-        losses = AverageMeter(['SparseLoss', 'DenseLoss'])
-        train_CDL2_loss = AverageMeter()
+        train_loss_list = AverageMeter(['cdc', 'cd1', 'cd2', 'cd3', 'cd4', 'partial_matching'])
+        train_loss_sum = AverageMeter()
 
         num_iter = 0
 
@@ -105,7 +113,7 @@ def run_net(args, config, train_writer=None, val_writer=None):
 
         train_gt_list = []
         train_recon_list = []
-        for idx, (taxonomy_ids, model_ids, data) in enumerate(train_dataloader):
+        for idx, (taxonomy_ids, model_ids, data) in enumerate(tqdm(train_dataloader)):
             data_time.update(time.time() - batch_start_time)
             npoints = config.dataset.train._base_.N_POINTS
             dataset_name = config.dataset.train._base_.NAME
@@ -127,31 +135,22 @@ def run_net(args, config, train_writer=None, val_writer=None):
 
             num_iter += 1
             
-            # ret = base_model(gt)    #folding_AE
-            ret = base_model(partial)     #general
+            ret = base_model(partial)    
             
-            #foldingnet损失
-            #为代码方便,令sparse_loss为loss_coarse
-            sparse_loss, dense_loss = base_model.module.get_loss(ret, gt, epoch)
-            train_CDL2_loss.update(dense_loss)
-            _loss = sparse_loss + dense_loss 
-            _loss.backward()
-            wandb.log({"Loss/Batch/Sparse": sparse_loss.item() * 1000,
-                       "Loss/Batch/dense": dense_loss.item() * 1000})
+            loss_sum, loss_list, gt_fps_list = base_model.module.get_loss(recon=ret, partial=partial, gt=gt)
+            train_loss_sum.update(loss_sum)
+            train_loss_list.update(loss_list)
+            loss_sum.backward()
+            # wandb.log({"train_loss_sum": train_loss_sum.item() * 1000,
+            #            "train_loss_cdc": dense_loss.item() * 1000})
 
-            if epoch % 20 == 0 and idx == 1:
+            #save train point cloud
+            if epoch != 0 and epoch % args.val_freq == 0 and idx == 1:
                 print("save train point cloud")
-                train_gt_0 = gt[0].squeeze().detach().cpu().numpy()
-                train_gt_1 = gt[1].squeeze().detach().cpu().numpy()
-                train_recon_0 = ret[1][0].squeeze().detach().cpu().numpy()
-                train_recon_1 = ret[1][1].squeeze().detach().cpu().numpy()
-                train_gt_list.append(train_gt_0)
-                train_gt_list.append(train_gt_1)
-                train_recon_list.append(train_recon_0)
-                train_recon_list.append(train_recon_1)
-                
-
-           
+                train_gt_list = [gt_fps_list[i][0].squeeze().detach().cpu().numpy() for i in range(5)]
+                train_recon_list = [ret[i][0].squeeze().detach().cpu().numpy() for i in range(5)]  
+                wandb.log({'train_gt': [wandb.Object3D(i) for i in train_gt_list],
+                        'train_recon': [wandb.Object3D(i) for i in train_recon_list]})
 
             '''
             pointr损失
@@ -167,44 +166,35 @@ def run_net(args, config, train_writer=None, val_writer=None):
             '''
             # forward
             if num_iter == config.step_per_update:
+                parameters = [p for p in base_model.module.parameters() if p.grad is not None]
+                total_norm = torch.norm(torch.stack([torch.norm(p.grad.detach(),2) for p in parameters]), 2)
                 torch.nn.utils.clip_grad_norm_(base_model.parameters(), getattr(config, 'grad_norm_clip', 10), norm_type=2)
                 num_iter = 0
                 optimizer.step()
                 base_model.zero_grad()
 
             if args.distributed:
-                sparse_loss = dist_utils.reduce_tensor(sparse_loss, args)
-                dense_loss = dist_utils.reduce_tensor(dense_loss, args)
-                losses.update([sparse_loss.item() * 1000, dense_loss.item() * 1000])
-            else:
-                losses.update([sparse_loss.item() * 1000, dense_loss.item() * 1000])
-
-
-            if args.distributed:
                 torch.cuda.synchronize()
-
-            n_itr = epoch * n_batches + idx
-            
-            if train_writer is not None:
-                train_writer.add_scalar('Loss/Batch/Sparse', sparse_loss.item() * 1000, n_itr)
-                train_writer.add_scalar('Loss/Batch/Dense', dense_loss.item() * 1000, n_itr)
 
             batch_time.update(time.time() - batch_start_time)
             batch_start_time = time.time()
 
             if idx % 100 == 0:
-                print_log('[Epoch %d/%d][Batch %d/%d] BatchTime = %.3f (s) DataTime = %.3f (s) Losses = %s lr = %.6f' %
+                print_log('[Epoch %d/%d][Batch %d/%d] BatchTime = %.3f (s) DataTime = %.3f (s) Losses = %.4f lr = %.6f total_norm=%.6f' %
                             (epoch, config.max_epoch, idx + 1, n_batches, batch_time.val(), data_time.val(),
-                            ['%.4f' % l for l in losses.val()], optimizer.param_groups[0]['lr']), logger = logger)
+                            (train_loss_list.val(4) * 1000), optimizer.param_groups[0]['lr'], total_norm), logger = logger)
 
-            if config.scheduler.type == 'GradualWarmup':
-                if n_itr < config.scheduler.kwargs_2.total_epoch:
-                    scheduler.step()
+            # break
+
             
-        if epoch % 20 == 0:
-            wandb.log({'train_gt': [wandb.Object3D(i) for i in train_gt_list],
-                        'train_recon': [wandb.Object3D(i) for i in train_recon_list]})
-        wandb.log({"Loss/Epoch/dense": train_CDL2_loss.avg() * 1000})
+        wandb.log({"train_loss_sum": train_loss_sum.avg() * 1000, 
+                   "train_loss_cdc": train_loss_list.avg(0) * 1000,
+                   "train_loss_cd1": train_loss_list.avg(1) * 1000,
+                   "train_loss_cd2": train_loss_list.avg(2) * 1000,
+                   "train_loss_cd3": train_loss_list.avg(3) * 1000,
+                   "cdl1------train_loss_cd4": train_loss_list.avg(4) * 1000,
+                   "train_loss_partial_matching": train_loss_list.avg(5) * 1000,})
+
 
         if isinstance(scheduler, list):
             for item in scheduler:
@@ -213,15 +203,12 @@ def run_net(args, config, train_writer=None, val_writer=None):
             scheduler.step()
         epoch_end_time = time.time()
 
-        if train_writer is not None:
-            train_writer.add_scalar('Loss/Epoch/Sparse', losses.avg(0), epoch)
-            train_writer.add_scalar('Loss/Epoch/Dense', losses.avg(1), epoch)
-        print_log('[Training] EPOCH: %d EpochTime = %.3f (s) Losses = %s' %
-            (epoch,  epoch_end_time - epoch_start_time, ['%.4f' % l for l in losses.avg()]), logger = logger)
+        print_log('[Training] EPOCH: %d EpochTime = %.3f (s) CDL1-Loss = %.4f' %
+            (epoch,  epoch_end_time - epoch_start_time, (train_loss_list.avg(4) * 1000)), logger = logger)
 
-        if epoch % args.val_freq == 0:
+        if epoch != 0 and epoch % args.val_freq == 0:
             # Validate the current model
-            metrics = validate(base_model, test_dataloader, epoch, ChamferDisL1, ChamferDisL2, val_writer, args, config, logger=logger)
+            metrics = validate(base_model, test_dataloader, epoch, args, config, logger=logger)
 
             # Save ckeckpoints
             if  metrics.better_than(best_metrics):
@@ -234,11 +221,13 @@ def run_net(args, config, train_writer=None, val_writer=None):
         train_writer.close()
         val_writer.close()
 
-def validate(base_model, test_dataloader, epoch, ChamferDisL1, ChamferDisL2, val_writer, args, config, logger = None):
+def validate(base_model, test_dataloader, epoch, args, config, logger = None):
     print_log(f"[VALIDATION] Start validating epoch {epoch}", logger = logger)
     base_model.eval()  # set model to eval mode
 
-    test_losses = AverageMeter(['SparseLossL1', 'SparseLossL2', 'DenseLossL1', 'DenseLossL2'])
+    test_loss_list = AverageMeter(['cdc', 'cd1', 'cd2', 'cd3', 'cd4', 'partial_matching'])
+    test_loss_sum = AverageMeter()
+
     test_metrics = AverageMeter(Metrics.names())
     category_metrics = dict()
     n_samples = len(test_dataloader) # 1200, bs is 1
@@ -253,10 +242,8 @@ def validate(base_model, test_dataloader, epoch, ChamferDisL1, ChamferDisL2, val
     recon_pth = os.path.join(save_pth, 'recon')
     os.makedirs(recon_pth, exist_ok=True)
 
-    gt_list = []
-    recon_list = []
     with torch.no_grad():
-        for idx, (taxonomy_ids, model_ids, data) in enumerate(test_dataloader):
+        for idx, (taxonomy_ids, model_ids, data) in enumerate(tqdm(test_dataloader)):
             taxonomy_id = taxonomy_ids[0] if isinstance(taxonomy_ids[0], str) else taxonomy_ids[0].item()
             model_id = model_ids[0]
 
@@ -272,47 +259,34 @@ def validate(base_model, test_dataloader, epoch, ChamferDisL1, ChamferDisL2, val
             else:
                 raise NotImplementedError(f'Train phase do not support {dataset_name}')
 
-            ret = base_model(gt)       #folding_AE
-            # ret = base_model(partial)     #general
-            coarse_points = ret[0]
+            ret = base_model(partial)      
             dense_points = ret[-1]
             recon = copy.deepcopy(dense_points)
+
+            loss_sum, loss_list, gt_fps_list = base_model.module.get_loss(ret, partial, gt)
+            test_loss_sum.update(loss_sum)
+            test_loss_list.update(loss_list)
             
             #保存图片
             if idx % 500 == 0:
+
+                test_gt_list = [gt_fps_list[i].squeeze().detach().cpu().numpy() for i in range(5)]
+                test_recon_list = [ret[i].squeeze().detach().cpu().numpy() for i in range(5)]  
+                wandb.log({'test_gt': [wandb.Object3D(i) for i in test_gt_list],
+                    'test_recon': [wandb.Object3D(i) for i in test_recon_list]})
+
                 input_gt = gt.squeeze().detach().cpu().numpy()
                 recon = recon.squeeze().detach().cpu().numpy()
-                gt_list.append(input_gt)
-                recon_list.append(recon)
-
                 input_gt_img = misc.get_ptcloud_img(input_gt)
                 im = Image.fromarray(input_gt_img)
                 gt_savepth = os.path.join(gt_pth, '%s.jpg' % model_ids)
                 im.save(gt_savepth)
-
                 recon_img = misc.get_ptcloud_img(recon)
                 im = Image.fromarray(recon_img)
                 recon_savepth = os.path.join(recon_pth, '%s.jpg' % model_ids)
                 im.save(recon_savepth)
 
 
-            sparse_loss_l1 =  ChamferDisL1(coarse_points, gt)
-            sparse_loss_l2 =  ChamferDisL2(coarse_points, gt)
-            dense_loss_l1 =  ChamferDisL1(dense_points, gt)
-            dense_loss_l2 =  ChamferDisL2(dense_points, gt)
-
-            if args.distributed:
-                sparse_loss_l1 = dist_utils.reduce_tensor(sparse_loss_l1, args)
-                sparse_loss_l2 = dist_utils.reduce_tensor(sparse_loss_l2, args)
-                dense_loss_l1 = dist_utils.reduce_tensor(dense_loss_l1, args)
-                dense_loss_l2 = dist_utils.reduce_tensor(dense_loss_l2, args)
-
-            test_losses.update([sparse_loss_l1.item() * 1000, sparse_loss_l2.item() * 1000, dense_loss_l1.item() * 1000, dense_loss_l2.item() * 1000])
-
-            # dense_points_all = dist_utils.gather_tensor(dense_points, args)
-            # gt_all = dist_utils.gather_tensor(gt, args)
-
-            # _metrics = Metrics.get(dense_points_all, gt_all)
             _metrics = Metrics.get(dense_points, gt)
             if args.distributed:
                 _metrics = [dist_utils.reduce_tensor(_metric, args).item() for _metric in _metrics]
@@ -324,37 +298,20 @@ def validate(base_model, test_dataloader, epoch, ChamferDisL1, ChamferDisL2, val
                     category_metrics[_taxonomy_id] = AverageMeter(Metrics.names())
                 category_metrics[_taxonomy_id].update(_metrics)
 
-
-            if val_writer is not None and idx % 200 == 0:
-                input_pc = partial.squeeze().detach().cpu().numpy()
-                input_pc = misc.get_ptcloud_img(input_pc)
-                val_writer.add_image('Model%02d/Input'% idx , input_pc, epoch, dataformats='HWC')
-
-                sparse = coarse_points.squeeze().cpu().numpy()
-                sparse_img = misc.get_ptcloud_img(sparse)
-                val_writer.add_image('Model%02d/Sparse' % idx, sparse_img, epoch, dataformats='HWC')
-
-                dense = dense_points.squeeze().cpu().numpy()
-                dense_img = misc.get_ptcloud_img(dense)
-                val_writer.add_image('Model%02d/Dense' % idx, dense_img, epoch, dataformats='HWC')
-                
-                gt_ptcloud = gt.squeeze().cpu().numpy()
-                gt_ptcloud_img = misc.get_ptcloud_img(gt_ptcloud)
-                val_writer.add_image('Model%02d/DenseGT' % idx, gt_ptcloud_img, epoch, dataformats='HWC')
-        
+       
             if (idx+1) % interval == 0:
                 print_log('Test[%d/%d] Taxonomy = %s Sample = %s Losses = %s Metrics = %s' %
-                            (idx + 1, n_samples, taxonomy_id, model_id, ['%.4f' % l for l in test_losses.val()], 
+                            (idx + 1, n_samples, taxonomy_id, model_id, '%.4f' % (test_loss_sum.val()*1000), 
                             ['%.4f' % m for m in _metrics]), logger=logger)
 
-        wandb.log({'test_gt': [wandb.Object3D(i) for i in gt_list],
-                    'test_recon': [wandb.Object3D(i) for i in recon_list]})
+            # break
+       
         #遍历字典
         for _,v in category_metrics.items():
             test_metrics.update(v.avg())
 
        #输出的平均值不是总体的平均值，而是每个类的平均值的平均值，好像就是论文中的表格那样计算方式
-        print_log('[Validation] EPOCH: %d  Metrics = %s' % (epoch, ['%.4f' % m for m in test_metrics.avg()]), logger=logger)
+        print_log('[Validation] EPOCH: %d  Metrics = %s' % (epoch, ['%.4f' % test_metrics.avg(i) for i in range(4)]), logger=logger)
 
         if args.distributed:
             torch.cuda.synchronize()
@@ -385,15 +342,10 @@ def validate(base_model, test_dataloader, epoch, ChamferDisL1, ChamferDisL2, val
         msg += '%.3f \t' % value
     print_log(msg, logger=logger)
 
-    # Add testing results to TensorBoard
-    if val_writer is not None:
-        val_writer.add_scalar('Loss/Epoch/Sparse', test_losses.avg(0), epoch)
-        val_writer.add_scalar('Loss/Epoch/Dense', test_losses.avg(2), epoch)
-        for i, metric in enumerate(test_metrics.items):
-            val_writer.add_scalar('Metric/%s' % metric, test_metrics.avg(i), epoch)
+    #使用wandb track重建的总loss和cdl1
+    wandb.log({'test_loss_sum': test_loss_sum.avg()*1000, 
+               'test_CDL1': test_metrics.avg()[1]})
 
-    #使用wandb track
-    wandb.log({'test_CDL1_epoch': test_metrics.avg()[1]})
     columns = ['Taxonomy', 'ClassName', 'nsamples', 'F1_Score', 'CDL1', 'CDL2', 'EMD']
     data = []
     for taxonomy_id in category_metrics:

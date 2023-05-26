@@ -9,6 +9,8 @@ from pointnet2_ops import pointnet2_utils
 from extensions.chamfer_dist import ChamferDistanceL1, ChamferDistanceL1_PM
 from .SnowFlakeNet_utils import PointNet_SA_Module_KNN, MLP_Res, MLP_CONV, fps_subsample, Transformer, MLP_Res, grouping_operation, query_knn
 from .build import MODELS
+from seed_utils.utils import distance_knn, vTransformer_posenc
+from pointnet2_ops.pointnet2_utils import furthest_point_sample, gather_operation
 
 def fps(pc, num):
     fps_idx = pointnet2_utils.furthest_point_sample(pc, num) 
@@ -83,9 +85,9 @@ class FeatureExtractor(nn.Module):
         """
         super(FeatureExtractor, self).__init__()
         self.sa_module_1 = PointNet_SA_Module_KNN(512, 16, 3, [64, 128], group_all=False, if_bn=False, if_idx=True)
-        self.transformer_1 = Transformer(128, dim=64)
+        self.transformer_1 = vTransformer_posenc(128, dim=64, n_knn=20)
         self.sa_module_2 = PointNet_SA_Module_KNN(128, 16, 128, [128, 256], group_all=False, if_bn=False, if_idx=True)
-        self.transformer_2 = Transformer(256, dim=64)
+        self.transformer_2 = vTransformer_posenc(256, dim=64, n_knn=20)
         self.sa_module_3 = PointNet_SA_Module_KNN(None, None, 256, [512, out_dim], group_all=True, if_bn=False)
 
     def forward(self, point_cloud):
@@ -227,8 +229,28 @@ class Decoder(nn.Module):
 
         return arr_pcd
 
+class Density_loss(nn.Module):
+    def __init__(self):
+        super(Density_loss, self).__init__()
+        self.loss = nn.MSELoss()
+        self.dis_avg = True
+    
+    def forward(self, seed, gt_s):
+        seed_dis = distance_knn(16, seed, seed)   #(B, 256, 16)
+        seed_dis = seed_dis.mean(dim=-1)    #(B, 256)
+        gt_dis = distance_knn(16, gt_s, gt_s)
+        gt_dis = gt_dis.mean(dim=-1)
+        if self.dis_avg:
+            dis = seed_dis.mean(dim=-1)  #(B)
+            gt_dis = gt_dis.mean(dim=-1)
+            loss = self.loss(dis, gt_dis)
+        else:
+            loss = self.loss(seed_dis, gt_dis)
+            
+        return loss
+    
 @MODELS.register_module()
-class SnowFlakeNet(nn.Module):
+class Snow_fusion(nn.Module):
     def __init__(self, config, **kwargs):
         """
         Args:
@@ -249,6 +271,8 @@ class SnowFlakeNet(nn.Module):
         self.feat_extractor = FeatureExtractor(out_dim=dim_feat)
         self.decoder = Decoder(dim_feat=dim_feat, num_pc=num_pc, num_p0=num_p0, radius=radius, up_factors=up_factors)
         self.build_loss_func()
+
+        self.density_loss = Density_loss()
 
     def build_loss_func(self):
         self.loss_func_CD = ChamferDistanceL1()
@@ -271,10 +295,12 @@ class SnowFlakeNet(nn.Module):
         cd2 = self.loss_func_CD(P2, gt_2)
         cd3 = self.loss_func_CD(P3, gt)
 
+        density_loss = self.density_loss(Pc, gt_c)
+
         partial_matching = self.loss_func_PM(partial, P3)
 
-        loss_sum = (cdc + cd1 + cd2 + cd3 + partial_matching)
-        loss_list = [cdc, cd1, cd2, cd3, partial_matching]
+        loss_sum = (cdc + cd1 + cd2 + cd3 + partial_matching + 10*density_loss)
+        loss_list = [cdc, cd1, cd2, cd3, partial_matching, density_loss]
 
         return loss_sum, loss_list, [gt_c, gt_1, gt_2, gt]
 

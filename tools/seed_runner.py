@@ -76,12 +76,13 @@ def run_net(args, config, train_writer=None, val_writer=None):
     # optimizer & scheduler
     optimizer, scheduler = builder.build_opti_sche(base_model, config)
 
-    #warmup
-    if config.GradualWarmupScheduler is not None:
-        warmup_scheduler = config.GradualWarmupScheduler
-        scheduler = GradualWarmupScheduler(optimizer, multiplier=warmup_scheduler.multiplier, 
-                                           total_epoch=warmup_scheduler.total_epoch,
-                                           after_scheduler=scheduler)
+    #####################warmup
+    # if config.GradualWarmupScheduler is not None:
+    #     warmup_scheduler = config.GradualWarmupScheduler
+    #     scheduler = GradualWarmupScheduler(optimizer, multiplier=warmup_scheduler.multiplier, 
+    #                                        total_epoch=warmup_scheduler.total_epoch,
+    #                                        after_scheduler=scheduler)
+
     # Criterion
     ChamferDisL1 = ChamferDistanceL1()
     ChamferDisL2 = ChamferDistanceL2()

@@ -842,13 +842,13 @@ class PCTransformer(nn.Module):
 
     def forward(self, xyz):
         bs = xyz.size(0)
-        coor, f = self.grouper(xyz, self.center_num) # b n c (B, 256, 3)/(B, 256, 128)
+        coor, f = self.grouper(xyz, self.center_num) # b n 3 (B, 256, 3)/ b n c (B, 256, 128)
         pe =  self.pos_embed(coor)  #(B, 256, 384)
         x = self.input_proj(f)      #(B, 256, 384)
 
         #use self-attention to encoder, and loop 6 epoch
         x = self.encoder(x + pe, coor) # b n c  (B, 256, 384)
-        global_feature = self.increase_dim(x) # B N 1024
+        global_feature = self.increase_dim(x) # B 256 1024
         global_feature = torch.max(global_feature, dim=1)[0] # B 1024
 
         #这是预测出来的点
@@ -986,8 +986,8 @@ class AdaPoinTr(nn.Module):
         else:
             #不再使用folding net重建,而是只用简单的mlp
             rebuild_feature = self.reduce_map(rebuild_feature) # B M C
-            relative_xyz = self.decode_head(rebuild_feature)   # B M S 3
-            rebuild_points = (relative_xyz + coarse_point_cloud.unsqueeze(-2))  # B M S 3
+            relative_xyz = self.decode_head(rebuild_feature)   # B 576 32 3
+            rebuild_points = (relative_xyz + coarse_point_cloud.unsqueeze(-2))  # B 576 32 3
 
         if self.training:
             # split the reconstruction and denoise task

@@ -210,7 +210,8 @@ class Decoder(nn.Module):
                 pcd1: coarse point (B, 256, 3),
                 pcd2: (B, 512, 3),
                 pcd3: (B, 2048, 3),
-                pcd4: (B, 16384, 3)
+                pcd4: (B, 8192, 3)
+                pcd5: (B, 16384, 3)
             ]
         """
         arr_pcd = []
@@ -228,7 +229,7 @@ class Decoder(nn.Module):
         return arr_pcd
 
 @MODELS.register_module()
-class SnowFlakeNet(nn.Module):
+class Snow_new(nn.Module):
     def __init__(self, config, **kwargs):
         """
         Args:
@@ -257,26 +258,28 @@ class SnowFlakeNet(nn.Module):
     def get_loss(self, recon, partial, gt, epoch=1,**kwargs):
         """loss function
         Args
-            pcds_pred: List of predicted point clouds, order in [Pc, P1, P2, P3, partial]
+            pcds_pred: List of predicted point clouds, order in [Pc, P1, P2, P3, P4, partial]
         """
 
-        Pc, P1, P2, P3 = recon
+        Pc, P1, P2, P3, P4 = recon
 
-        gt_2 = fps(gt, P2.shape[1])
+        gt_3 = fps(gt, P3.shape[1])
+        gt_2 = fps(gt_3, P2.shape[1])
         gt_1 = fps(gt_2, P1.shape[1])
         gt_c = fps(gt_1, Pc.shape[1])
 
         cdc = self.loss_func_CD(Pc, gt_c)
         cd1 = self.loss_func_CD(P1, gt_1)
         cd2 = self.loss_func_CD(P2, gt_2)
-        cd3 = self.loss_func_CD(P3, gt)
+        cd3 = self.loss_func_CD(P3, gt_3)
+        cd4 = self.loss_func_CD(P3, gt)
 
-        partial_matching = self.loss_func_PM(partial, P3)
+        partial_matching = self.loss_func_PM(partial, P4)
 
-        loss_sum = (cdc + cd1 + cd2 + cd3 + partial_matching)
-        loss_list = [cdc, cd1, cd2, cd3, partial_matching]
+        loss_sum = (cdc + cd1 + cd2 + cd3 + cd4 + partial_matching)
+        loss_list = [cdc, cd1, cd2, cd3, cd4, partial_matching]
 
-        return loss_sum, loss_list, [gt_c, gt_1, gt_2, gt]
+        return loss_sum, loss_list, [gt_c, gt_1, gt_2, gt_3, gt]
 
     def forward(self, point_cloud, return_P0=False):
         """
@@ -288,7 +291,8 @@ class SnowFlakeNet(nn.Module):
                     pcd1: (B, 256, 3),
                     pcd2: (B, 512, 3),
                     pcd3: (B, 2048, 3),
-                    pcd4: (B, 16384, 3),
+                    pcd4: (B, 8192, 3),
+                    pcd5: (B, 16384, 3),
                 ]
         """
         pcd_bnc = point_cloud

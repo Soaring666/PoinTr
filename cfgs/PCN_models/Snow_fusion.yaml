@@ -22,7 +22,7 @@ dataset : { # note that, snowflake use different input transform (RandomSample -
             others: {subset: 'test'}}}
             
 model : {
-  NAME: SnowFlakeNet, 
+  NAME: Snow_fusion, 
   dim_feat: 512, 
   num_pc: 256, 
   num_p0: 512, 

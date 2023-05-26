@@ -76,12 +76,12 @@ def run_net(args, config, train_writer=None, val_writer=None):
     # optimizer & scheduler
     optimizer, scheduler = builder.build_opti_sche(base_model, config)
 
-    #warmup
-    if config.GradualWarmupScheduler is not None:
-        warmup_scheduler = config.GradualWarmupScheduler
-        scheduler = GradualWarmupScheduler(optimizer, multiplier=warmup_scheduler.multiplier, 
-                                           total_epoch=warmup_scheduler.total_epoch,
-                                           after_scheduler=scheduler)
+    ##############warmup
+    # if config.GradualWarmupScheduler is not None:
+    #     warmup_scheduler = config.GradualWarmupScheduler
+    #     scheduler = GradualWarmupScheduler(optimizer, multiplier=warmup_scheduler.multiplier, 
+    #                                        total_epoch=warmup_scheduler.total_epoch,
+    #                                        after_scheduler=scheduler)
     # Criterion
     ChamferDisL1 = ChamferDistanceL1()
     ChamferDisL2 = ChamferDistanceL2()
@@ -167,6 +167,8 @@ def run_net(args, config, train_writer=None, val_writer=None):
             if num_iter == config.step_per_update:
                 parameters = [p for p in base_model.module.parameters() if p.grad is not None]
                 total_norm = torch.norm(torch.stack([torch.norm(p.grad.detach(),2) for p in parameters]), 2)
+                if epoch > 1 and total_norm >= 9:
+                    break
                 torch.nn.utils.clip_grad_norm_(base_model.parameters(), getattr(config, 'grad_norm_clip', 10), norm_type=2)
                 num_iter = 0
                 optimizer.step()

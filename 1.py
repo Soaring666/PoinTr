@@ -24,38 +24,10 @@ from torch import distributed as dist
 
 # device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
-class PosEncode(nn.Module):
-    def __init__(self):
-        super().__init__()
-        self.out_dim = 126  #the out featdim, 6的倍数
-        self.alpha = 100
-        self.beta = 1000
-   
-        
-    def forward(self, xyz):
-        '''
-        xyz: coordinates of point cloud (B, 3, N)
-        output: feature (B, out_dim, N)
-        '''
-        B, _, N, K = xyz.shape
-        feat_dim = self.out_dim // 6    
-
-        feat_range = torch.arange(feat_dim).float().to(xyz.device)     
-        dim_embed = torch.pow(self.beta, feat_range / feat_dim)     #(out_dim/6)
-        div_embed = torch.div(self.alpha * xyz.unsqueeze(-1), dim_embed)    #(B, 3, N, out_dim/6)
-
-        sin_embed = torch.sin(div_embed)
-        cos_embed = torch.cos(div_embed)
-        position_embed = torch.cat([sin_embed, cos_embed], -1)
-        position_embed = position_embed.permute(0, 1, 4, 2, 3).contiguous()
-        position_embed = position_embed.view(B, self.out_dim, N, K)
-
-        return position_embed
-
-pos_enc = PosEncode()
-xyz = torch.rand(2, 3, 100, 16)
-out = pos_enc(xyz)
-print(out.shape)
+embedding = nn.Embedding(10, 128)
+label = '123004'
+embed = embedding(label)
+print(embed.shape)
 
 
 

@@ -181,10 +181,18 @@ class PosTransformer(nn.Module):
     def __init__(self, dim):
         super(PosTransformer, self).__init__()
 
+        self.n_knn = 16
         self.posencode = PosEncode_3(60)
         self.conv_query = nn.Conv1d(60, dim, 1, 1, 0)
         self.conv_key = nn.Conv1d(60, dim, 1, 1, 0)
         self.conv_value = nn.Conv1d(60, dim, 1, 1, 0)
+
+        self.attn_mlp = nn.Sequential(
+            nn.Conv2d(dim, dim * 4, 1),
+            nn.BatchNorm2d(dim * 4),
+            nn.ReLU(),
+            nn.Conv2d(dim * 4, dim, 1)
+        )
 
         self.scale = dim ** -0.5
 
@@ -204,19 +212,26 @@ class PosTransformer(nn.Module):
         """
 
         B, _, N = pos.shape
-        pos_emb = self.posencode(pos)  #(B, 60, N)
+        pos_flipped = pos.permute(0, 2, 1).contiguous()
+        idx_knn = query_knn(self.n_knn, pos_flipped, pos_flipped)
 
+        pos_emb = self.posencode(pos)  #(B, 60, N)
         query = self.conv_query(pos_emb) # (B, dim, N)
         key = self.conv_key(pos_emb) # (B, dim, N)
         value = self.conv_value(pos_emb)   # (B, dim, N)
 
-        attn = torch.matmul(query.transpose(-2, -1), key) * self.scale  #(B, N, N)
-        attn = attn.softmax(dim=-1) #(B, N, N)
-        out = torch.matmul(attn, value.transpose(-2, -1)).transpose(-2, -1)  #(B, dim, N)
+        key = grouping_operation(key, idx_knn)  # (B, dim, N, k)
+        qk_rel = query.reshape((B, -1, N, 1)) - key         #qk relative
 
-        res = self.res_conv(pos)
+        attn = self.attn_mlp(qk_rel)
+        attn = torch.softmax(attn, -1)    #(B, dim, N, k)
 
-        return out+res
+        value = grouping_operation(value, idx_knn)  # (B, dim, N, k)
+        agg = einsum('b c i j, b c i j -> b c i', attn,
+                     value)  # (B, dim, N)
+
+
+        return agg
     
         
 class FeatUp(nn.Module):
@@ -420,6 +435,8 @@ class SeedFormer_newup(nn.Module):
         #posattn
         self.posattn = PosTransformer(64)
         self.knnfeat = Knnfeat()
+
+        #get coordinates
         self.mlp1 = nn.Sequential(
             MLP_Res(704),
             MLP_Res(128, 64)
@@ -433,6 +450,7 @@ class SeedFormer_newup(nn.Module):
             nn.ReLU(),
             nn.Conv1d(64, 3, 1)
         )
+
         self.mlp4 = nn.Sequential(
             MLP_Res(704),
             MLP_Res(128, 64)
@@ -442,6 +460,20 @@ class SeedFormer_newup(nn.Module):
             MLP_Res(128, 64)
         )
         self.mlp6 = nn.Sequential(
+            nn.Conv1d(128, 64, 1),
+            nn.ReLU(),
+            nn.Conv1d(64, 3, 1)
+        )
+
+        self.mlp7 = nn.Sequential(
+            MLP_Res(704),
+            MLP_Res(128, 64)
+        )
+        self.mlp8 = nn.Sequential(
+            MLP_Res(640),
+            MLP_Res(128, 64)
+        )
+        self.mlp9 = nn.Sequential(
             nn.Conv1d(128, 64, 1),
             nn.ReLU(),
             nn.Conv1d(64, 3, 1)
@@ -532,10 +564,10 @@ class SeedFormer_newup(nn.Module):
         pcd2_feat = self.upsample1(pcd2_feat)   #(B, 192, 2048)
 
         pcd2_feat = torch.cat([pcd2_feat, feat.repeat(1, 1, pcd2_feat.size(2))], 1)   #(B, 704, 2048)
-        pcd2_feat = self.mlp1(pcd2_feat) #(B, 128, 2048)
+        pcd2_feat = self.mlp4(pcd2_feat) #(B, 128, 2048)
         pcd2_feat = torch.cat([pcd2_feat, feat.repeat(1, 1, pcd2_feat.size(2))], 1)   #(B, 640, 2048) 
-        pcd2_feat = self.mlp2(pcd2_feat) #(B, 128, 2048)
-        pcd2_delta = self.mlp3(pcd2_feat).transpose(-2, -1).contiguous()    #(B, 2048, 3)
+        pcd2_feat = self.mlp5(pcd2_feat) #(B, 128, 2048)
+        pcd2_delta = self.mlp6(pcd2_feat).transpose(-2, -1).contiguous()    #(B, 2048, 3)
         pcd2 = self.upsample1(pcd.transpose(-2, -1).contiguous()).transpose(-2, -1).contiguous() + pcd2_delta
         
         pred_pcds.append(pcd2)
@@ -547,10 +579,10 @@ class SeedFormer_newup(nn.Module):
         pcd3_feat = self.upsample2(pcd3_feat)   #(B, 192, 16384)
 
         pcd3_feat = torch.cat([pcd3_feat, feat.repeat(1, 1, pcd3_feat.size(2))], 1)   #(B, 704, 16384)
-        pcd3_feat = self.mlp4(pcd3_feat) #(B, 128, 16384)
+        pcd3_feat = self.mlp7(pcd3_feat) #(B, 128, 16384)
         pcd3_feat = torch.cat([pcd3_feat, feat.repeat(1, 1, pcd3_feat.size(2))], 1)   #(B, 640, 16384) 
-        pcd3_feat = self.mlp5(pcd3_feat) #(B, 128, 16384)
-        pcd3_delta = self.mlp6(pcd3_feat).transpose(-2, -1).contiguous()    #(B, 16384, 3)
+        pcd3_feat = self.mlp8(pcd3_feat) #(B, 128, 16384)
+        pcd3_delta = self.mlp9(pcd3_feat).transpose(-2, -1).contiguous()    #(B, 16384, 3)
         pcd3 = self.upsample2(pcd.transpose(-2, -1).contiguous()).transpose(-2, -1).contiguous() + pcd3_delta
         
         pred_pcds.append(pcd3)
@@ -591,7 +623,7 @@ class SeedFormer_newup(nn.Module):
 
         partial_matching = PM(partial, P3)
 
-        loss_sum = (cdc + cd1 + 2*cd2 + 4*cd3 + partial_matching + density_loss)
+        loss_sum = (cdc + cd1 + 2*cd2 + 4*cd3 + partial_matching + 20*density_loss)
         loss_list = [cdc, cd1, cd2, cd3, partial_matching, density_loss]
         return loss_sum, loss_list, [gt_c, gt_1, gt_2, gt]
 
