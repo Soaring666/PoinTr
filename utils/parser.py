@@ -7,7 +7,7 @@ def get_args():
     parser.add_argument(
         '--config', 
         type = str, 
-        default = './cfgs/PCN_models/Seedformer_newup.yaml', 
+        default = './cfgs/PCN_models/Snow_fusion.yaml', 
         help = 'yaml config file')
     parser.add_argument(
         '--launcher',

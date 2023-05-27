@@ -25,7 +25,7 @@ from torch import distributed as dist
 # device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
 embedding = nn.Embedding(10, 128)
-label = '123004'
+label = torch.tensor([3, 5, 1, 0])
 embed = embedding(label)
 print(embed.shape)
 

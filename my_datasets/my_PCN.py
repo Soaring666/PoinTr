@@ -34,6 +34,11 @@ class PCN(data.Dataset):
         self.file_list = self._get_file_list(self.subset, self.n_renderings)
         self.transforms = self._get_transforms(self.subset)
 
+        ######get embedding
+        self.catfile = config.CATFILE
+        self.cat = [line.rstrip() for line in open(self.catfile)]
+        self.classes = dict(zip(self.cat, range(len(self.cat))))
+        
     def _get_transforms(self, subset):
         if subset == 'train':
             return data_transforms.Compose([{
@@ -73,6 +78,8 @@ class PCN(data.Dataset):
                 file_list.append({
                     'taxonomy_id':
                     dc['taxonomy_id'],
+                    'taxonomy_name':
+                    dc['taxonomy_name'],
                     'model_id':
                     s,
                     'partial_path': [
@@ -102,7 +109,7 @@ class PCN(data.Dataset):
         if self.transforms is not None:
             data = self.transforms(data)
 
-        return sample['taxonomy_id'], sample['model_id'], (data['partial'], data['gt'])
+        return self.classes[sample['taxonomy_name']], sample['model_id'], (data['partial'], data['gt'])
 
     def __len__(self):
         return len(self.file_list)

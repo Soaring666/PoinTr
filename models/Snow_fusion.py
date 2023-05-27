@@ -4,6 +4,7 @@
 
 import torch
 import torch.nn as nn
+import copy
 from torch import nn, einsum
 from pointnet2_ops import pointnet2_utils
 from extensions.chamfer_dist import ChamferDistanceL1, ChamferDistanceL1_PM
@@ -11,6 +12,7 @@ from .SnowFlakeNet_utils import PointNet_SA_Module_KNN, MLP_Res, MLP_CONV, fps_s
 from .build import MODELS
 from seed_utils.utils import distance_knn, vTransformer_posenc
 from pointnet2_ops.pointnet2_utils import furthest_point_sample, gather_operation
+from snow_utils.utils import Self_postrans, PosTransformer
 
 def fps(pc, num):
     fps_idx = pointnet2_utils.furthest_point_sample(pc, num) 
@@ -85,9 +87,9 @@ class FeatureExtractor(nn.Module):
         """
         super(FeatureExtractor, self).__init__()
         self.sa_module_1 = PointNet_SA_Module_KNN(512, 16, 3, [64, 128], group_all=False, if_bn=False, if_idx=True)
-        self.transformer_1 = vTransformer_posenc(128, dim=64, n_knn=20)
+        self.transformer_1 = Transformer(128, dim=64, n_knn=20)
         self.sa_module_2 = PointNet_SA_Module_KNN(128, 16, 128, [128, 256], group_all=False, if_bn=False, if_idx=True)
-        self.transformer_2 = vTransformer_posenc(256, dim=64, n_knn=20)
+        self.transformer_2 = Transformer(256, dim=64, n_knn=20)
         self.sa_module_3 = PointNet_SA_Module_KNN(None, None, 256, [512, out_dim], group_all=True, if_bn=False)
 
     def forward(self, point_cloud):
@@ -212,7 +214,7 @@ class Decoder(nn.Module):
                 pcd1: coarse point (B, 256, 3),
                 pcd2: (B, 512, 3),
                 pcd3: (B, 2048, 3),
-                pcd4: (B, 16384, 3)
+                pcd4: (B, 8192, 3)
             ]
         """
         arr_pcd = []
@@ -229,25 +231,33 @@ class Decoder(nn.Module):
 
         return arr_pcd
 
-class Density_loss(nn.Module):
+class Final_decoder(nn.Module):
     def __init__(self):
-        super(Density_loss, self).__init__()
-        self.loss = nn.MSELoss()
-        self.dis_avg = True
+        super(Final_decoder, self).__init__()
+        self.global_attn = Self_postrans(128) 
+        self.knn_attn = PosTransformer()
+        self.mlp = nn.Sequential(
+            nn.Conv1d(256, 128, 1),
+            nn.BatchNorm1d(128),
+            nn.ReLU(),
+            nn.Conv1d(128, 3, 1)
+        )
     
-    def forward(self, seed, gt_s):
-        seed_dis = distance_knn(16, seed, seed)   #(B, 256, 16)
-        seed_dis = seed_dis.mean(dim=-1)    #(B, 256)
-        gt_dis = distance_knn(16, gt_s, gt_s)
-        gt_dis = gt_dis.mean(dim=-1)
-        if self.dis_avg:
-            dis = seed_dis.mean(dim=-1)  #(B)
-            gt_dis = gt_dis.mean(dim=-1)
-            loss = self.loss(dis, gt_dis)
-        else:
-            loss = self.loss(seed_dis, gt_dis)
-            
-        return loss
+    def forward(self, pos, seed):
+        """
+        input:
+            pos: (B, 3, N)
+            seed: (B, 3, 256)
+        output:
+            pcd: (B, 3, N)
+        """
+        global_out = self.global_attn(pos)      #(B, 128, N)
+        knn_out = self.knn_attn(pos, seed)      #(B, 128, N)
+        delta = self.mlp(torch.cat([global_out, knn_out], 1))   #(B, 128, N)
+        pcd = pos + delta
+
+        return pcd
+        
     
 @MODELS.register_module()
 class Snow_fusion(nn.Module):
@@ -270,9 +280,8 @@ class Snow_fusion(nn.Module):
 
         self.feat_extractor = FeatureExtractor(out_dim=dim_feat)
         self.decoder = Decoder(dim_feat=dim_feat, num_pc=num_pc, num_p0=num_p0, radius=radius, up_factors=up_factors)
+        self.final_decoder = Final_decoder()
         self.build_loss_func()
-
-        self.density_loss = Density_loss()
 
     def build_loss_func(self):
         self.loss_func_CD = ChamferDistanceL1()
@@ -281,28 +290,28 @@ class Snow_fusion(nn.Module):
     def get_loss(self, recon, partial, gt, epoch=1,**kwargs):
         """loss function
         Args
-            pcds_pred: List of predicted point clouds, order in [Pc, P1, P2, P3, partial]
+            pcds_pred: List of predicted point clouds, order in [Pc, P1, P2, P3, P4, partial]
         """
 
-        Pc, P1, P2, P3 = recon
+        Pc, P1, P2, P3, P4 = recon
 
-        gt_2 = fps(gt, P2.shape[1])
+        gt_3 = fps(gt, P3.shape[1])
+        gt_2 = fps(gt_3, P2.shape[1])
         gt_1 = fps(gt_2, P1.shape[1])
         gt_c = fps(gt_1, Pc.shape[1])
 
         cdc = self.loss_func_CD(Pc, gt_c)
         cd1 = self.loss_func_CD(P1, gt_1)
         cd2 = self.loss_func_CD(P2, gt_2)
-        cd3 = self.loss_func_CD(P3, gt)
+        cd3 = self.loss_func_CD(P3, gt_3)
+        cd4 = self.loss_func_CD(P4, gt)
 
-        density_loss = self.density_loss(Pc, gt_c)
+        partial_matching = self.loss_func_PM(partial, P4)
 
-        partial_matching = self.loss_func_PM(partial, P3)
+        loss_sum = (cdc + cd1 + cd2 + cd3 + cd4 + partial_matching)
+        loss_list = [cdc, cd1, cd2, cd3, cd4, partial_matching]
 
-        loss_sum = (cdc + cd1 + cd2 + cd3 + partial_matching + 10*density_loss)
-        loss_list = [cdc, cd1, cd2, cd3, partial_matching, density_loss]
-
-        return loss_sum, loss_list, [gt_c, gt_1, gt_2, gt]
+        return loss_sum, loss_list, [gt_c, gt_1, gt_2, gt_3, gt]
 
     def forward(self, point_cloud, return_P0=False):
         """
@@ -314,12 +323,19 @@ class Snow_fusion(nn.Module):
                     pcd1: (B, 256, 3),
                     pcd2: (B, 512, 3),
                     pcd3: (B, 2048, 3),
-                    pcd4: (B, 16384, 3),
+                    pcd4: (B, 8192, 3),
+                    pcd5: (B, 16384, 3),
                 ]
         """
         pcd_bnc = point_cloud
         point_cloud = point_cloud.permute(0, 2, 1).contiguous()
         feat = self.feat_extractor(point_cloud)     #(B, 512, 1)
         out = self.decoder(feat, pcd_bnc, return_P0=return_P0)
+
+        pcd = out[-1].permute(0, 2, 1).contiguous()
+        final = self.final_decoder(pcd, out[0].permute(0, 2, 1).contiguous())
+        final = torch.cat([pcd, final], -1)     #(B, 3, 16384)
+
+        out.append(final.permute(0, 2, 1).contiguous())
 
         return out
