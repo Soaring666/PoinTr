@@ -152,6 +152,8 @@ class SPD(nn.Module):
         self.mlp_1 = MLP_CONV(in_channel=3, layer_dims=[64, 128])
         self.mlp_2 = MLP_CONV(in_channel=128 * 3 + dim_feat, layer_dims=[256, 128])
 
+        self.mlp_label = Label_mlp(128)
+
         self.skip_transformer = SkipTransformer(in_channel=128, dim=64)
 
         self.mlp_ps = MLP_CONV(in_channel=128, layer_dims=[64, 32])
@@ -180,6 +182,7 @@ class SPD(nn.Module):
                             feat_global.repeat(1, 1, feat_1.size(2)),
                             label_emb.unsqueeze(2).repeat(1, 1, feat_1.size(2))], 1)
         Q = self.mlp_2(feat_1)
+        Q = self.mlp_label(label_emb, Q)
 
         H = self.skip_transformer(pcd_prev, K_prev if K_prev is not None else Q, Q)
 
