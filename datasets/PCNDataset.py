@@ -141,7 +141,8 @@ class PCNv2(data.Dataset):
 
         ######get embedding
         self.catfile = config.CATFILE
-        self.cat = [line.rstrip() for line in open(self.catfile)]
+        with open(self.catfile) as k:
+            self.cat = [line.rstrip() for line in k]
         self.classes = dict(zip(self.cat, range(len(self.cat))))
         
     def _get_transforms(self, subset):
@@ -214,7 +215,7 @@ class PCNv2(data.Dataset):
         if self.transforms is not None:
             data = self.transforms(data)
 
-        return self.classes[sample['taxonomy_name']], sample['model_id'], (data['partial'], data['gt'])
+        return self.classes[sample['taxonomy_name']], sample['taxonomy_id'], sample['model_id'], (data['partial'], data['gt'])
 
     def __len__(self):
         return len(self.file_list)

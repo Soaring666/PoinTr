@@ -110,3 +110,49 @@ class PosTransformer(nn.Module):
 
         return grouped_feat
  
+class Label_emb(nn.Module):
+    def __init__(self):
+        super(Label_emb, self).__init__()
+        self.embedding = nn.Embedding(8, 128)
+        self.emb_mlp = nn.Sequential(
+            nn.Linear(128, 128),
+            nn.ReLU(),
+            nn.Linear(128, 128)
+        )
+    
+    def forward(self, label):
+        """
+        inputs:
+            label: (B)
+        outputs:
+            out: (B, 128)
+        """
+        B = label.shape
+        label_emb = self.embedding(label)
+        label_emb = self.emb_mlp(label_emb)
+
+        return label_emb
+
+class Label_mlp(nn.Module):
+    def __init__(self, dim):
+        super(Label_mlp, self).__init__()
+        self.layer1 = nn.Sequential(
+            nn.Linear(128, dim),
+            nn.ReLU(),
+            nn.Linear(dim, dim)
+        )
+        self.layer2 = nn.Sequential(
+            nn.Conv1d(2*dim, 2*dim, 1),
+            nn.BatchNorm1d(2*dim),
+            nn.ReLU(),
+            nn.Conv1d(2*dim, dim, 1)
+        )
+        
+    def forward(self, label, feat):
+        #label: (B, 128), feat: (B, dim, N)
+        label = self.layer1(label)
+        label = label.unsqueeze(-1).repeat(1, 1, feat.shape[-1])
+        feat = torch.cat([label, feat], dim=1)  #(B, 2*dim, N)
+        feat = self.layer2(feat)    #(B, dim, N)
+        
+        return feat

@@ -9,6 +9,7 @@ from pointnet2_ops import pointnet2_utils
 from extensions.chamfer_dist import ChamferDistanceL1, ChamferDistanceL1_PM
 from .SnowFlakeNet_utils import PointNet_SA_Module_KNN, MLP_Res, MLP_CONV, fps_subsample, Transformer, MLP_Res, grouping_operation, query_knn
 from .build import MODELS
+from snow_utils.utils import Label_emb, Label_mlp
 
 def fps(pc, num):
     fps_idx = pointnet2_utils.furthest_point_sample(pc, num) 
@@ -88,10 +89,15 @@ class FeatureExtractor(nn.Module):
         self.transformer_2 = Transformer(256, dim=64)
         self.sa_module_3 = PointNet_SA_Module_KNN(None, None, 256, [512, out_dim], group_all=True, if_bn=False)
 
-    def forward(self, point_cloud):
+        self.label_mlp1 = Label_mlp(128) 
+        self.label_mlp2 = Label_mlp(256)
+        self.label_mlp3 = Label_mlp(512)
+
+    def forward(self, point_cloud, label_emb):
         """
         Args:
              point_cloud: b, 3, n
+             label_emb: b, 128
         Returns:
             l3_points: (B, out_dim, 1)
         """
@@ -99,10 +105,13 @@ class FeatureExtractor(nn.Module):
         l0_points = point_cloud
 
         l1_xyz, l1_points, idx1 = self.sa_module_1(l0_xyz, l0_points)  # (B, 3, 512), (B, 128, 512)
+        l1_points = self.label_mlp1(label_emb, l1_points)   #(B, 128, 512)
         l1_points = self.transformer_1(l1_points, l1_xyz)
         l2_xyz, l2_points, idx2 = self.sa_module_2(l1_xyz, l1_points)  # (B, 3, 128), (B, 256, 512)
+        l2_points = self.label_mlp2(label_emb, l2_points)   #(B, 256, 512)
         l2_points = self.transformer_2(l2_points, l2_xyz)
         l3_xyz, l3_points = self.sa_module_3(l2_xyz, l2_points)  # (B, 3, 1), (B, 512, 1)
+        l3_points = self.label_mlp3(label_emb, l3_points)   #(B, 512, 1)
 
         return l3_points
 
@@ -141,7 +150,7 @@ class SPD(nn.Module):
         self.up_factor = up_factor
         self.radius = radius
         self.mlp_1 = MLP_CONV(in_channel=3, layer_dims=[64, 128])
-        self.mlp_2 = MLP_CONV(in_channel=128 * 2 + dim_feat, layer_dims=[256, 128])
+        self.mlp_2 = MLP_CONV(in_channel=128 * 3 + dim_feat, layer_dims=[256, 128])
 
         self.skip_transformer = SkipTransformer(in_channel=128, dim=64)
 
@@ -153,11 +162,12 @@ class SPD(nn.Module):
 
         self.mlp_delta = MLP_CONV(in_channel=128, layer_dims=[64, 3])
 
-    def forward(self, pcd_prev, feat_global, K_prev=None):
+    def forward(self, pcd_prev, feat_global, label_emb, K_prev=None):
         """
         Args:
             pcd_prev: Tensor, (B, 3, N_prev)
             feat_global: Tensor, (B, dim_feat, 1)
+            label_emb: (B, 128)
             K_prev: Tensor, (B, 128, N_prev)
         Returns:
             pcd_child: Tensor, up sampled point cloud, (B, 3, N_prev * up_factor)
@@ -167,7 +177,8 @@ class SPD(nn.Module):
         feat_1 = self.mlp_1(pcd_prev)
         feat_1 = torch.cat([feat_1,
                             torch.max(feat_1, 2, keepdim=True)[0].repeat((1, 1, feat_1.size(2))),
-                            feat_global.repeat(1, 1, feat_1.size(2))], 1)
+                            feat_global.repeat(1, 1, feat_1.size(2)),
+                            label_emb.unsqueeze(2).repeat(1, 1, feat_1.size(2))], 1)
         Q = self.mlp_2(feat_1)
 
         H = self.skip_transformer(pcd_prev, K_prev if K_prev is not None else Q, Q)
@@ -200,11 +211,12 @@ class Decoder(nn.Module):
 
         self.uppers = nn.ModuleList(uppers)
 
-    def forward(self, feat, partial, return_P0=False):
+    def forward(self, feat, partial, label_emb, return_P0=False):
         """
         Args:
             feat: Tensor, (b, dim_feat, n)
             partial: Tensor, (b, n, 3)
+            label_emb: (b, 128)
         output:
             arr_pcd: [
                 pcd1: coarse point (B, 256, 3),
@@ -222,13 +234,13 @@ class Decoder(nn.Module):
         K_prev = None
         pcd = pcd.permute(0, 2, 1).contiguous()
         for upper in self.uppers:
-            pcd, K_prev = upper(pcd, feat, K_prev)
+            pcd, K_prev = upper(pcd, feat, label_emb, K_prev)
             arr_pcd.append(pcd.permute(0, 2, 1).contiguous())
 
         return arr_pcd
 
 @MODELS.register_module()
-class SnowFlakeNet(nn.Module):
+class Snow_new(nn.Module):
     def __init__(self, config, **kwargs):
         """
         Args:
@@ -249,6 +261,8 @@ class SnowFlakeNet(nn.Module):
         self.feat_extractor = FeatureExtractor(out_dim=dim_feat)
         self.decoder = Decoder(dim_feat=dim_feat, num_pc=num_pc, num_p0=num_p0, radius=radius, up_factors=up_factors)
         self.build_loss_func()
+
+        self.labelemb = Label_emb()
 
     def build_loss_func(self):
         self.loss_func_CD = ChamferDistanceL1()
@@ -278,10 +292,11 @@ class SnowFlakeNet(nn.Module):
 
         return loss_sum, loss_list, [gt_c, gt_1, gt_2, gt]
 
-    def forward(self, point_cloud, return_P0=False):
+    def forward(self, point_cloud, label, return_P0=False):
         """
         Args:
             point_cloud: (B, N, 3)
+            lable: (B,)
         output:
             if training:
                 out:[
@@ -291,9 +306,13 @@ class SnowFlakeNet(nn.Module):
                     pcd4: (B, 16384, 3),
                 ]
         """
+
+        ####lable embedding
+        label_emb = self.labelemb(label)    #(B, 128)
+
         pcd_bnc = point_cloud
         point_cloud = point_cloud.permute(0, 2, 1).contiguous()
-        feat = self.feat_extractor(point_cloud)     #(B, 512, 1)
-        out = self.decoder(feat, pcd_bnc, return_P0=return_P0)
+        feat = self.feat_extractor(point_cloud, label_emb)     #(B, 512, 1)
+        out = self.decoder(feat, pcd_bnc, label_emb, return_P0=return_P0)
 
         return out

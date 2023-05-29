@@ -113,7 +113,7 @@ def run_net(args, config, train_writer=None, val_writer=None):
 
         train_gt_list = []
         train_recon_list = []
-        for idx, (taxonomy_ids, model_ids, data) in enumerate(tqdm(train_dataloader)):
+        for idx, (label, taxonomy_ids, model_ids, data) in enumerate(tqdm(train_dataloader)):
             data_time.update(time.time() - batch_start_time)
             npoints = config.dataset.train._base_.N_POINTS
             dataset_name = config.dataset.train._base_.NAME
@@ -135,7 +135,7 @@ def run_net(args, config, train_writer=None, val_writer=None):
 
             num_iter += 1
             
-            ret = base_model(partial)    
+            ret = base_model(partial, label)    
             
             loss_sum, loss_list, gt_fps_list = base_model.module.get_loss(recon=ret, partial=partial, gt=gt)
             train_loss_sum.update(loss_sum)
@@ -242,7 +242,7 @@ def validate(base_model, test_dataloader, epoch, args, config, logger = None):
     os.makedirs(recon_pth, exist_ok=True)
 
     with torch.no_grad():
-        for idx, (taxonomy_ids, model_ids, data) in enumerate(tqdm(test_dataloader)):
+        for idx, (label, taxonomy_ids, model_ids, data) in enumerate(tqdm(test_dataloader)):
             taxonomy_id = taxonomy_ids[0] if isinstance(taxonomy_ids[0], str) else taxonomy_ids[0].item()
             model_id = model_ids[0]
 
@@ -258,7 +258,7 @@ def validate(base_model, test_dataloader, epoch, args, config, logger = None):
             else:
                 raise NotImplementedError(f'Train phase do not support {dataset_name}')
 
-            ret = base_model(partial)      
+            ret = base_model(partial, label)      
             dense_points = ret[-1]
             recon = copy.deepcopy(dense_points)
 
