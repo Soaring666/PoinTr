@@ -78,6 +78,11 @@ class MLP_Res(nn.Module):
         super(MLP_Res, self).__init__()
         if hidden_dim is None:
             hidden_dim = in_dim
+        self.layer1 = nn.Sequential(
+            nn.Conv1d(in_dim, hidden_dim, 1),
+            nn.GroupNorm(32, hidden_dim),
+            nn.LeakyReLU(0.2),
+        )
         self.conv_1 = nn.Conv1d(in_dim, hidden_dim, 1)
         self.conv_2 = nn.Conv1d(hidden_dim, out_dim, 1)
         self.conv_shortcut = nn.Conv1d(in_dim, out_dim, 1)
@@ -88,7 +93,7 @@ class MLP_Res(nn.Module):
             x: (B, out_dim, n)
         """
         shortcut = self.conv_shortcut(x)
-        out = self.conv_2(torch.relu(self.conv_1(x))) + shortcut
+        out = self.conv_2(self.layer1(x)) + shortcut
         return out
 
 

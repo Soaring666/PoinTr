@@ -1,0 +1,39 @@
+optimizer : {
+  type: Adam,
+  kwargs: {
+  lr : 0.001, 
+  weight_decay : 0,
+  betas: [.9, .999]
+}}      
+scheduler: {
+  type: StepLR,
+  kwargs: {
+  step_size: 50,
+  gamma : 0.5
+}}
+
+
+dataset : { # note that, snowflake use different input transform (RandomSample -> UpSample)
+  train : { _base_: cfgs/dataset_configs/PCNv2.yaml, 
+            others: {subset: 'train'}},
+  val : { _base_: cfgs/dataset_configs/PCNv2.yaml, 
+            others: {subset: 'test'}},
+  test : { _base_: cfgs/dataset_configs/PCNv2.yaml, 
+            others: {subset: 'test'}}}
+            
+model : {
+  NAME: Snow_trick, 
+  dim_feat: 512, 
+  num_pc: 256, 
+  num_p0: 512, 
+  radius: 1, 
+  up_factors: [4, 8]
+  }
+
+total_train_bs : 50
+total_val_bs: 1
+total_test_bs: 1
+step_per_update: 1
+max_epoch : 300
+
+consider_metric: CDL1
