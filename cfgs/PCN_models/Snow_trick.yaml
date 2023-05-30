@@ -30,7 +30,7 @@ model : {
   up_factors: [4, 8]
   }
 
-total_train_bs : 50
+total_train_bs : 45
 total_val_bs: 1
 total_test_bs: 1
 step_per_update: 1

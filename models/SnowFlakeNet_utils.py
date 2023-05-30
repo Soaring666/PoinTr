@@ -26,8 +26,8 @@ class Conv2d(nn.Module):
         super(Conv2d, self).__init__()
         self.conv = nn.Conv2d(in_channel, out_channel, kernel_size, stride=stride)
         self.if_bn = if_bn
-        self.bn = nn.BatchNorm2d(out_channel)
-        self.activation_fn = activation_fn
+        self.bn = nn.GroupNorm(32, out_channel)
+        self.activation_fn = nn.LeakyReLU(0.2)
 
     def forward(self, input):
         out = self.conv(input)
@@ -47,8 +47,8 @@ class MLP(nn.Module):
         for out_channel in layer_dims[:-1]:
             layers.append(nn.Linear(last_channel, out_channel))
             if bn:
-                layers.append(nn.BatchNorm1d(out_channel))
-            layers.append(nn.ReLU())
+                layers.append(nn.GroupNorm(32, out_channel))
+            layers.append(nn.LeakyReLU(0.2))
             last_channel = out_channel
         layers.append(nn.Linear(last_channel, layer_dims[-1]))
         self.mlp = nn.Sequential(*layers)
@@ -64,7 +64,7 @@ class MLP_CONV(nn.Module):
         for out_channel in layer_dims[:-1]:
             layers.append(nn.Conv1d(last_channel, out_channel, 1))
             layers.append(nn.GroupNorm(32, out_channel))
-            layers.append(nn.ReLU())
+            layers.append(nn.LeakyReLU(0.2))
             last_channel = out_channel
         layers.append(nn.Conv1d(last_channel, layer_dims[-1], 1))
         self.mlp = nn.Sequential(*layers)
@@ -404,15 +404,15 @@ class Transformer(nn.Module):
 
         self.pos_mlp = nn.Sequential(
             nn.Conv2d(3, pos_hidden_dim, 1),
-            nn.BatchNorm2d(pos_hidden_dim),
-            nn.ReLU(),
+            nn.GroupNorm(32, pos_hidden_dim),
+            nn.LeakyReLU(0.2),
             nn.Conv2d(pos_hidden_dim, dim, 1)
         )
 
         self.attn_mlp = nn.Sequential(
             nn.Conv2d(dim, dim * attn_hidden_multiplier, 1),
-            nn.BatchNorm2d(dim * attn_hidden_multiplier),
-            nn.ReLU(),
+            nn.GroupNorm(32, dim * attn_hidden_multiplier),
+            nn.LeakyReLU(0.2),
             nn.Conv2d(dim * attn_hidden_multiplier, dim, 1)
         )
 

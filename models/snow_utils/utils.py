@@ -138,13 +138,13 @@ class Label_mlp(nn.Module):
         super(Label_mlp, self).__init__()
         self.layer1 = nn.Sequential(
             nn.Linear(128, dim),
-            nn.ReLU(),
+            nn.LeakyReLU(0.2),
             nn.Linear(dim, dim)
         )
         self.layer2 = nn.Sequential(
             nn.Conv1d(2*dim, 2*dim, 1),
-            nn.BatchNorm1d(2*dim),
-            nn.ReLU(),
+            nn.GroupNorm(32, 2*dim),
+            nn.LeakyReLU(0,2),
             nn.Conv1d(2*dim, dim, 1)
         )
         
