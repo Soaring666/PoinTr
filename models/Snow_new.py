@@ -9,6 +9,7 @@ from pointnet2_ops import pointnet2_utils
 from extensions.chamfer_dist import ChamferDistanceL1, ChamferDistanceL1_PM
 from .SnowFlakeNet_utils import PointNet_SA_Module_KNN, MLP_Res, MLP_CONV, fps_subsample, Transformer, MLP_Res, grouping_operation, query_knn
 from .build import MODELS
+from seed_utils.utils import PosEncode_3
 from snow_utils.utils import Label_emb, Label_mlp
 
 def fps(pc, num):
@@ -150,9 +151,11 @@ class SPD(nn.Module):
         self.up_factor = up_factor
         self.radius = radius
         self.mlp_1 = MLP_CONV(in_channel=3, layer_dims=[64, 128])
-        self.mlp_2 = MLP_CONV(in_channel=128 * 3 + dim_feat, layer_dims=[256, 128])
+        self.mlp_2 = MLP_CONV(in_channel=128 * 4 + dim_feat, layer_dims=[512, 256, 128])
 
         self.mlp_label = Label_mlp(128)
+        self.posencode = PosEncode_3(126) 
+        self.mlp_3 = MLP_CONV(in_channel=126, layer_dims=[128, 128])
 
         self.skip_transformer = SkipTransformer(in_channel=128, dim=64)
 
@@ -177,10 +180,12 @@ class SPD(nn.Module):
         """
         b, _, n_prev = pcd_prev.shape
         feat_1 = self.mlp_1(pcd_prev)
+        feat_2 = self.mlp_3(self.posencode(pcd_prev))   #(B, 128, N)
         feat_1 = torch.cat([feat_1,
+                            feat_2,
                             torch.max(feat_1, 2, keepdim=True)[0].repeat((1, 1, feat_1.size(2))),
                             feat_global.repeat(1, 1, feat_1.size(2)),
-                            label_emb.unsqueeze(2).repeat(1, 1, feat_1.size(2))], 1)
+                            label_emb.unsqueeze(2).repeat(1, 1, feat_1.size(2))], 1)    #(B, 128*4 + dim_fiat, N)
         Q = self.mlp_2(feat_1)
         Q = self.mlp_label(label_emb, Q)
 

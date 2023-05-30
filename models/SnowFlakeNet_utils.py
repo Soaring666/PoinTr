@@ -57,14 +57,13 @@ class MLP(nn.Module):
         return self.mlp(inputs)
 
 class MLP_CONV(nn.Module):
-    def __init__(self, in_channel, layer_dims, bn=None):
+    def __init__(self, in_channel, layer_dims):
         super(MLP_CONV, self).__init__()
         layers = []
         last_channel = in_channel
         for out_channel in layer_dims[:-1]:
             layers.append(nn.Conv1d(last_channel, out_channel, 1))
-            if bn:
-                layers.append(nn.BatchNorm1d(out_channel))
+            layers.append(nn.GroupNorm(32, out_channel))
             layers.append(nn.ReLU())
             last_channel = out_channel
         layers.append(nn.Conv1d(last_channel, layer_dims[-1], 1))
